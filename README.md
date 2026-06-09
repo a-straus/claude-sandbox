@@ -263,8 +263,69 @@ per iteration (each contains a `session_id` — replay any iteration with
 - **Budgets:** the loop stops at `MAX_ITERATIONS` or `MAX_COST_USD`;
   re-running continues from file state. Re-running is always safe — that's
   the point of the design.
-- **Done:** when GOAL.md §15 is fully met the orchestrator writes
-  `.release-done` and the loop exits with a summary.
+- **Done:** when GOAL.md §15 is fully met (and your FEEDBACK.md inbox is
+  empty) the orchestrator writes `.release-done` and the loop exits with a
+  summary.
+
+---
+
+## The first hour
+
+Don't start unbounded. Start with the design phase only:
+
+```sh
+MAX_ITERATIONS=3 orchestrate          # draft → critique → reconcile, then stops
+```
+
+That gives you a built-in human checkpoint at the moment of highest
+leverage, before any product code exists. Read three files:
+
+- `ARCHITECTURE.md` — is the design sane? Are the conventions what you'd pick?
+- `DECISIONS.md` — were the contested calls between drafter and critic reasonable?
+- `TASKS.md` — is the backlog actually your product, sliced sensibly?
+
+Happy? `orchestrate` again with a real budget — re-running always continues
+from file state. Not happy? Edit GOAL.md (`chmod u+w` first) or drop notes
+in `FEEDBACK.md`, then re-run; the next iteration folds them in.
+
+**What you should see, in order:** the state-adoption commit → iteration 1
+commits ARCHITECTURE.md and an `arch-critique` window appears → iteration 2
+integrates the critique and fills the backlog → up to 3 worker windows →
+`check.sh` lands → the first `Integrate:` merge → check stays green.
+
+**Where to look while it runs:**
+
+```sh
+tmux attach -t orchestrator      # one narrated status block per iteration
+git log --oneline                # ground truth: Integrate: merges landing
+list-agents                      # branch states at a glance
+tmux attach -t agents            # live worker streams
+tail -f logs/<branch>.*.jsonl    # a specific worker's full transcript
+```
+
+**Warning signs:** consecutive `FAILED` iterations in `logs/orchestrator.log`
+(read the matching `iter-N.err`), the same branch re-spawned 3+ times, an
+unnoticed `[PENDING]` in QUESTIONS.md. And remember **quiet ≠ dead**: when
+nothing changes the loop backs off to 5-minute sleeps — check the last
+timestamp in `orchestrator.log` before assuming a hang. To intervene:
+`touch STOP`, investigate, fix, `rm STOP`, re-run.
+
+---
+
+## Steering it
+
+Three channels, by altitude — pick the one that matches the change:
+
+| You want to… | Channel | What happens |
+|---|---|---|
+| Change what the product *is*: new scope, new stories, new definition of done | **GOAL.md** (yours alone; `chmod u+w` locally, or edit on GitHub in sync mode) | Next iteration re-decomposes the delta into the backlog |
+| Fix, tweak, or extend within current scope ("shuffle the quiz answers", "add a streak counter") | **FEEDBACK.md → `## Inbox`** | Each item becomes prioritized backlog tasks next iteration, then moves to `## Processed` with a note. Schema-touching items go through the schema gate; non-goal-crossing items come back as questions |
+| Answer something it asked | **QUESTIONS.md** | Flip to `[ANSWERED]`, next iteration proceeds |
+
+**After a release** ("v1 works — then what?"): add the next wave to GOAL.md
+and/or FEEDBACK.md, `rm .release-done`, re-run `orchestrate`. The Done
+history stays; the delta becomes the new backlog. GOAL.md is versioned in
+git, so v2 of the product is literally v2 of the file.
 
 ---
 
@@ -329,6 +390,7 @@ waits.
 | `GOAL.md` | You | Product vision, constraints, autonomy rules — **read-only for all agents** |
 | `TASKS.md` | Orchestrator | Live task board — committed, don't edit during a run |
 | `QUESTIONS.md` | Shared | Orchestrator asks; you answer |
+| `FEEDBACK.md` | Shared | You ask; orchestrator acts — your steering inbox for changes within scope |
 | `DECISIONS.md` | Orchestrator | One line per resolved decision — its durable memory |
 | `ARCHITECTURE.md` | Orchestrator | The technical design: entities, conventions, boundaries. Amended only through the schema gate |
 | `check.sh` | Orchestrator | The project's build+test gate; `integrate` runs it before every merge |

@@ -144,9 +144,9 @@ Commit it and exit. The orchestrator serializes all model changes.
   this worktree, never spawn other agents.
 - If ARCHITECTURE.md exists in this repo, follow its entities and
   conventions exactly.
-- Never modify GOAL.md, TASKS.md, QUESTIONS.md, DECISIONS.md, or
-  ARCHITECTURE.md — integration is automatically refused for branches that
-  touch them. GOAL.md is the human's spec; ARCHITECTURE.md changes go
+- Never modify GOAL.md, TASKS.md, QUESTIONS.md, DECISIONS.md, FEEDBACK.md,
+  or ARCHITECTURE.md — integration is automatically refused for branches
+  that touch them. GOAL.md is the human's spec; ARCHITECTURE.md changes go
   through the orchestrator's schema gate (see above).
 EOF
 

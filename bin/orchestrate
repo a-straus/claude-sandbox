@@ -69,7 +69,7 @@ command -v claude >/dev/null 2>&1 || die "claude CLI not found in PATH"
 command -v jq >/dev/null 2>&1 || die "jq not found in PATH (required to parse iteration results)"
 
 # Copy state-file templates into the project if they're not there yet.
-for f in GOAL.md TASKS.md QUESTIONS.md DECISIONS.md ARCHITECTURE.md; do
+for f in GOAL.md TASKS.md QUESTIONS.md DECISIONS.md ARCHITECTURE.md FEEDBACK.md; do
     if [[ ! -f "$repo/$f" && -f "$sandbox/$f" ]]; then
         cp "$sandbox/$f" "$repo/$f"
         echo "Copied $f template to $repo/$f"
@@ -134,7 +134,7 @@ git -C "$repo" worktree prune
 # it); the orchestrator keeps TASKS/QUESTIONS/DECISIONS committed as it works.
 chmod u+w "$repo/GOAL.md" 2>/dev/null || true
 state_changed=0
-for f in GOAL.md TASKS.md QUESTIONS.md DECISIONS.md ARCHITECTURE.md; do
+for f in GOAL.md TASKS.md QUESTIONS.md DECISIONS.md ARCHITECTURE.md FEEDBACK.md; do
     [[ -f "$repo/$f" ]] || continue
     if ! git -C "$repo" ls-files --error-unmatch "$f" >/dev/null 2>&1 \
             || ! git -C "$repo" diff --quiet HEAD -- "$f" 2>/dev/null; then
@@ -144,7 +144,7 @@ for f in GOAL.md TASKS.md QUESTIONS.md DECISIONS.md ARCHITECTURE.md; do
 done
 if (( state_changed )); then
     git -C "$repo" commit -q -m "orchestrator: adopt/update state files" || true
-    echo "Committed state files (GOAL/TASKS/QUESTIONS/DECISIONS/ARCHITECTURE)."
+    echo "Committed state files (GOAL/TASKS/QUESTIONS/DECISIONS/ARCHITECTURE/FEEDBACK)."
 fi
 
 # GOAL.md is the human's spec — keep it read-only on disk as a tripwire.
@@ -220,6 +220,10 @@ backlog_count() {
     awk '/^## Backlog/{f=1; next} /^## /{f=0} f && /^- /' TASKS.md 2>/dev/null | wc -l | tr -d ' '
 }
 
+inbox_count() {
+    awk '/^## Inbox/{f=1; next} /^## /{f=0} f && /^- /' FEEDBACK.md 2>/dev/null | wc -l | tr -d ' '
+}
+
 log_line() {
     echo "[$(date '+%F %T')] $*" | tee -a logs/orchestrator.log
 }
@@ -242,7 +246,7 @@ sync_push() {
 # Safety net: the orchestrator is instructed to commit its state changes, but
 # a timed-out iteration must not lose board state.
 state_commit() {
-    git add -- TASKS.md QUESTIONS.md DECISIONS.md ARCHITECTURE.md 2>/dev/null || true
+    git add -- TASKS.md QUESTIONS.md DECISIONS.md ARCHITECTURE.md FEEDBACK.md 2>/dev/null || true
     if ! git diff --cached --quiet 2>/dev/null; then
         git commit -q -m "orchestrator: state sync (iteration $iter)" || true
     fi
@@ -297,7 +301,8 @@ while :; do
     pending=$(grep -c '^### \[PENDING\]' QUESTIONS.md 2>/dev/null) || pending=0
     if (( pending > 0 )) \
             && (( $(running_workers "$repo") == 0 )) \
-            && (( $(backlog_count) == 0 )); then
+            && (( $(backlog_count) == 0 )) \
+            && (( $(inbox_count) == 0 )); then
         finished=0
         while IFS= read -r b; do
             [[ -n "$b" && -f "$(worker_done_file "$repo" "$b")" ]] && finished=1

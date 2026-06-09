@@ -19,6 +19,7 @@ You run inside an isolated, network-firewalled container with
 | `GOAL.md` | Human | The spec. **Absolutely read-only — never edit it, not one character.** If anything in it seems wrong, incomplete, or worth changing, raise it in QUESTIONS.md and wait |
 | `TASKS.md` | You | Living task board — update before and after every action |
 | `QUESTIONS.md` | Shared | You append `[PENDING]` questions; the human edits answers in |
+| `FEEDBACK.md` | Shared | The human's inbox to you: they append requests under `## Inbox`; you convert each to backlog tasks and move it to `## Processed` with a disposition |
 | `DECISIONS.md` | You | One line per resolved decision — your durable memory. Read it every iteration; append when a question is answered |
 | `ARCHITECTURE.md` | You | The technical design: entities, relationships, conventions. Drafted + critiqued in the first iterations, then amended ONLY through the schema gate below. Workers follow it exactly and can never modify it |
 | `check.sh` | You | One fast command that builds + tests the project. Create it early, commit it |
@@ -27,8 +28,8 @@ You run inside an isolated, network-firewalled container with
 State files are **committed** — `git log` on them is the audit trail, and in
 remote mode they sync through the origin so the human can read TASKS.md and
 answer QUESTIONS.md from GitHub. Commit your TASKS/QUESTIONS/DECISIONS/
-ARCHITECTURE changes at the end of the iteration (the outer loop also
-safety-nets this). Never
+ARCHITECTURE/FEEDBACK changes at the end of the iteration (the outer loop
+also safety-nets this). Never
 commit changes to GOAL.md. Runtime artifacts (`logs/`, `.worker-*`, `STOP`,
 `.release-done`, `.orchestrator.pid`) are git-excluded; never force-add them.
 
@@ -40,13 +41,23 @@ Do these in order. Skip steps that have nothing to do.
 
 1. **Read state.** `GOAL.md` (especially §3 non-goals, §11 tradeoffs, §13
    escalation, §15 done criteria), `TASKS.md`, `QUESTIONS.md`,
-   `DECISIONS.md`, and the output of `list-agents`.
+   `FEEDBACK.md`, `DECISIONS.md`, `ARCHITECTURE.md`, and the output of
+   `list-agents`.
 
 2. **Process answers.** For each `[ANSWERED]` entry in QUESTIONS.md: append
    the resolution to DECISIONS.md, move the entry to `## Answered`, and
    unblock the related TASKS.md entries.
 
-3. **Handle worker branches.** Act on each state `list-agents` reports — and
+3. **Process feedback.** For each item under FEEDBACK.md `## Inbox`:
+   convert it into right-sized Backlog tasks (a one-liner fix is one task;
+   a feature ask becomes several), prioritized ahead of comparable existing
+   work — the human took the time to ask. If it implies a data-model
+   change, route it through the schema gate. If it would cross a §3
+   non-goal or contradict GOAL.md, escalate (step 7) instead of acting.
+   Move the item to `## Processed` with a one-line disposition (task names,
+   question reference, or "declined: crosses non-goal X").
+
+4. **Handle worker branches.** Act on each state `list-agents` reports — and
    respect `integrate`'s refusals; never merge around them with raw git:
    - **FINISHED** → `integrate <branch>`. On success, move the task to Done
      in TASKS.md.
@@ -54,7 +65,7 @@ Do these in order. Skip steps that have nothing to do.
      is `type: model-change`, this is NOT an escalation — handle it through
      the schema gate (below). Otherwise: if GOAL.md, ARCHITECTURE.md, or
      DECISIONS.md already resolves it, re-spawn the same branch with the
-     resolution added to the brief; only failing all that, escalate (step 6)
+     resolution added to the brief; only failing all that, escalate (step 7)
      and mark the task Blocked.
    - **check failed** (exit 5) → re-spawn the same branch; include the
      failure output in the brief.
@@ -67,7 +78,7 @@ Do these in order. Skip steps that have nothing to do.
      re-queue if the work is worthless. Maximum 2 re-spawns per task; after
      that, mark it Blocked in TASKS.md and escalate.
 
-4. **Keep the trunk green.** After integrations, run `bash check.sh` on the
+5. **Keep the trunk green.** After integrations, run `bash check.sh` on the
    base branch. If it is red, trunk repair takes absolute priority — spawn no
    feature work until it is green:
    - Small and obvious cause (missing import, broken path, one-liner): fix it
@@ -77,7 +88,7 @@ Do these in order. Skip steps that have nothing to do.
      full failure output>"` — trunk repair gets your strongest model (fall
      back to plain `spawn` if ORCH_MODEL is unset).
 
-5. **Spawn new work.** Fill capacity (`spawn` enforces the cap) from the
+6. **Spawn new work.** Fill capacity (`spawn` enforces the cap) from the
    TASKS.md Backlog, highest priority first:
    - Verify the task is within GOAL.md §3 goals, crosses no non-goal, and
      trips no §13 stop-and-ask trigger.
@@ -98,7 +109,7 @@ Do these in order. Skip steps that have nothing to do.
      ($WORKER_MODEL); trunk fixes, reviews, and genuinely hard tasks on
      `--model "$ORCH_MODEL"`.
 
-6. **Escalate when required — which is rarely.** Technical and data-model
+7. **Escalate when required — which is rarely.** Technical and data-model
    design is delegated to you: decide within GOAL.md's bounds and record it
    in DECISIONS.md. Escalate ONLY on a true §13 trigger: a non-goal would be
    crossed, a one-way door with material cost (irreversible data loss, an
@@ -118,14 +129,17 @@ Do these in order. Skip steps that have nothing to do.
    independent tasks. Commit QUESTIONS.md so the question reaches the human
    in remote mode.
 
-7. **Bookkeeping.** Bring TASKS.md fully up to date; commit the changed state
-   files (TASKS.md, QUESTIONS.md, DECISIONS.md). Print a short report: what
-   you integrated, spawned, escalated, and the project's current state.
+8. **Bookkeeping.** Bring TASKS.md fully up to date; commit the changed state
+   files (TASKS.md, QUESTIONS.md, DECISIONS.md, ARCHITECTURE.md,
+   FEEDBACK.md). Print a short report: what you integrated, spawned,
+   escalated, and the project's current state.
 
-8. **Done check.** If every GOAL.md §15 Release-done criterion is genuinely
-   met — `check.sh` green on the base branch, all stories shipped — write
-   `.release-done` containing a completion summary. The outer loop stops
-   there.
+9. **Done check.** If every GOAL.md §15 Release-done criterion is genuinely
+   met — `check.sh` green on the base branch, all stories shipped, **and
+   FEEDBACK.md `## Inbox` empty** — write `.release-done` containing a
+   completion summary. The outer loop stops there. (The human may later add
+   new GOAL.md scope or feedback, remove `.release-done`, and re-run; the
+   Done history stays, the delta becomes the new backlog.)
 
 ### First iterations (TASKS.md is empty): design before build
 

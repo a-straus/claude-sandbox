@@ -12,8 +12,8 @@
 #   5  check.sh failed on the branch — re-spawn with a brief to fix it
 #   6  merge conflict (aborted, base left clean) — re-spawn against current base
 #   7  branch modifies protected state files (GOAL.md / TASKS.md / QUESTIONS.md /
-#      DECISIONS.md / ARCHITECTURE.md) — re-spawn with a brief to drop those
-#      changes, or abandon
+#      DECISIONS.md / ARCHITECTURE.md / FEEDBACK.md) — re-spawn with a brief to
+#      drop those changes, or abandon
 set -euo pipefail
 . "$(dirname "$0")/_lib.sh"
 
@@ -83,7 +83,7 @@ fi
 # rest). Workers may read them; branches that modify them never merge.
 # ARCHITECTURE.md changes only enter through the orchestrator's schema gate.
 protected="$(git -C "$root" diff --name-only "$base..$branch" -- \
-    GOAL.md TASKS.md QUESTIONS.md DECISIONS.md ARCHITECTURE.md)"
+    GOAL.md TASKS.md QUESTIONS.md DECISIONS.md ARCHITECTURE.md FEEDBACK.md)"
 if [[ -n "$protected" ]]; then
     echo "REFUSED: '$branch' modifies protected state files:" >&2
     printf '    %s\n' $protected >&2
