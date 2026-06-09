@@ -52,7 +52,7 @@ echo "=== Capacity ==="
 echo "  $(running_workers "$root") running / ${MAX_WORKERS:-3} max"
 
 if [[ -f "$root/QUESTIONS.md" ]]; then
-    pending=$(grep -c '\[PENDING\]' "$root/QUESTIONS.md" 2>/dev/null) || pending=0
+    pending=$(grep -c '^### \[PENDING\]' "$root/QUESTIONS.md" 2>/dev/null) || pending=0
     echo ""
     echo "=== Pending questions ==="
     echo "  $pending"

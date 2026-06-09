@@ -278,8 +278,9 @@ while :; do
     iter=$((iter + 1))
 
     # Periodically re-resolve the firewall allowlist — CDN IPs rotate, and a
-    # multi-day run will otherwise start failing mysteriously.
-    if (( FIREWALL_EVERY > 0 && iter % FIREWALL_EVERY == 0 )) \
+    # multi-day run will otherwise start failing mysteriously. (Two separate
+    # guards: a combined arithmetic && does not protect the modulo on all bashes.)
+    if (( FIREWALL_EVERY > 0 )) && (( iter % FIREWALL_EVERY == 0 )) \
             && [[ -x /usr/local/bin/init-firewall.sh ]]; then
         sudo -n /usr/local/bin/init-firewall.sh >/dev/null 2>&1 \
             && log_line "firewall allowlist refreshed" \
@@ -291,7 +292,9 @@ while :; do
     # Cheap idle fast-path: humans are slow. If the only possible work is
     # waiting on a [PENDING] answer (no workers running or finished, nothing
     # in the backlog), poll in bash instead of burning an iteration.
-    pending=$(grep -c '\[PENDING\]' QUESTIONS.md 2>/dev/null) || pending=0
+    # Anchored: only real question headings count, not the template's
+    # instruction comment that mentions the [PENDING] token.
+    pending=$(grep -c '^### \[PENDING\]' QUESTIONS.md 2>/dev/null) || pending=0
     if (( pending > 0 )) \
             && (( $(running_workers "$repo") == 0 )) \
             && (( $(backlog_count) == 0 )); then
