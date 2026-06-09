@@ -127,6 +127,12 @@ If you hit one of these, do NOT guess: write a file called BLOCKED.md
 describing what is blocking you, what you tried, and what decision or input
 you need. Commit it and exit.
 
+Special case — data-model changes: if completing this task would require a
+schema or data-model change beyond what this brief explicitly allows, do NOT
+make it. Write BLOCKED.md whose FIRST line is exactly \`type: model-change\`,
+followed by the proposed change, why it is needed, and what it impacts.
+Commit it and exit. The orchestrator serializes all model changes.
+
 ## Rules
 
 - Do this task and nothing else. Do not expand scope.
@@ -136,9 +142,12 @@ you need. Commit it and exit.
 - Commit ALL changes with clear, descriptive messages before exiting.
 - Never push, never open pull requests, never switch branches, never leave
   this worktree, never spawn other agents.
-- Never modify GOAL.md, TASKS.md, QUESTIONS.md, or DECISIONS.md — integration
-  is automatically refused for branches that touch them. GOAL.md is the
-  human's spec: read-only for all agents.
+- If ARCHITECTURE.md exists in this repo, follow its entities and
+  conventions exactly.
+- Never modify GOAL.md, TASKS.md, QUESTIONS.md, DECISIONS.md, or
+  ARCHITECTURE.md — integration is automatically refused for branches that
+  touch them. GOAL.md is the human's spec; ARCHITECTURE.md changes go
+  through the orchestrator's schema gate (see above).
 EOF
 
 # ── Write the runner and launch ───────────────────────────────────────────────

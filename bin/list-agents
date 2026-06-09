@@ -27,8 +27,15 @@ while IFS= read -r b; do
     if [[ -f "$wt/.worker-done" ]]; then
         ec="$(head -1 "$wt/.worker-done" | tr -dc '0-9')"
         if branch_blocked "$root" "$b"; then
-            echo "  $b — BLOCKED ($commits commits) → read: git show $b:BLOCKED.md ;" \
-                 "resolve or escalate, then re-spawn or abandon"
+            if git -C "$root" show "$b:BLOCKED.md" 2>/dev/null | head -1 \
+                    | grep -qi 'model-change'; then
+                echo "  $b — BLOCKED: MODEL-CHANGE REQUEST ($commits commits) →" \
+                     "schema gate: drain workers, decide, update ARCHITECTURE.md," \
+                     "apply alone (see CLAUDE.md). Read: git show $b:BLOCKED.md"
+            else
+                echo "  $b — BLOCKED ($commits commits) → read: git show $b:BLOCKED.md ;" \
+                     "resolve or escalate, then re-spawn or abandon"
+            fi
         elif [[ -n "$ec" && "$ec" != "0" ]]; then
             echo "  $b — FAILED (worker exit $ec, $commits commits) → check latest" \
                  "logs/$b.*.jsonl ; re-spawn to resume or abandon"

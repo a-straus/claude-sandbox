@@ -109,7 +109,7 @@ state_fingerprint() {   # state_fingerprint <root>
     {
         git -C "$1" rev-parse HEAD 2>/dev/null
         git -C "$1" for-each-ref refs/heads --format='%(refname) %(objectname)'
-        cat "$1/TASKS.md" "$1/QUESTIONS.md" "$1/DECISIONS.md" 2>/dev/null
+        cat "$1/TASKS.md" "$1/QUESTIONS.md" "$1/DECISIONS.md" "$1/ARCHITECTURE.md" 2>/dev/null
         while IFS= read -r b; do
             [[ -n "$b" ]] || continue
             [[ -f "$(worker_done_file "$1" "$b")" ]] && echo "done:$b"

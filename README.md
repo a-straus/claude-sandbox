@@ -39,6 +39,47 @@ Two properties make this survive long runs:
   no marker, a committed `BLOCKED.md`, no commits, modified state files, or a
   red `check.sh` all block the merge with a reason the orchestrator acts on.
 
+### Design first: two minds, then a locked architecture
+
+Before any feature work, the first two iterations are a design phase: the
+orchestrator drafts `ARCHITECTURE.md` from your GOAL.md §8 (entities,
+relationships, conventions), then spawns a **fresh-context critic on the
+strong model** whose only job is to attack the draft — missing entities,
+scope creep, simpler alternatives. The orchestrator reconciles the critique,
+records contested calls in `DECISIONS.md`, and only then decomposes the
+backlog. Two minds, one uncontaminated by the other's assumptions.
+
+### The schema gate
+
+The data model is the one piece of state every task shares, so changes to it
+are serialized — **one model change in flight, ever, applied while nothing
+else runs**:
+
+1. A worker that needs a schema change doesn't make it — it commits a
+   `BLOCKED.md` starting with `type: model-change` and exits.
+2. The orchestrator stops spawning, lets running workers finish, and
+   integrates them (drain).
+3. It then decides the request **on its own authority** against GOAL.md and
+   ARCHITECTURE.md — you are not asked.
+4. If approved: ARCHITECTURE.md is updated, and a single strong-model task
+   applies the migration + adapts all affected code, alone, gated by
+   check.sh.
+5. Work resumes; re-spawned workers get briefs quoting the new model.
+   Queued change requests go one per cycle, each re-justified against the
+   post-change world.
+
+Enforcement is mechanical, not aspirational: `integrate` refuses any worker
+branch that touches ARCHITECTURE.md (or any other state file).
+
+### When does it ask you questions?
+
+Almost never — that's the contract. Technical and data-model decisions are
+delegated to the orchestrator and logged in `DECISIONS.md` for you to audit
+asynchronously. `QUESTIONS.md` is reserved for GOAL.md §13 triggers only: a
+non-goal would be crossed, a genuinely irreversible one-way door (data loss,
+external contracts, paid dependencies), or GOAL.md contradicting itself. The
+better you fill §3/§8/§11/§13, the closer questions get to zero.
+
 ### Who runs on what
 
 | Role | Model | Knob |
@@ -288,6 +329,7 @@ waits.
 | `TASKS.md` | Orchestrator | Live task board — committed, don't edit during a run |
 | `QUESTIONS.md` | Shared | Orchestrator asks; you answer |
 | `DECISIONS.md` | Orchestrator | One line per resolved decision — its durable memory |
+| `ARCHITECTURE.md` | Orchestrator | The technical design: entities, conventions, boundaries. Amended only through the schema gate |
 | `check.sh` | Orchestrator | The project's build+test gate; `integrate` runs it before every merge |
 | `CLAUDE.md` | Sandbox | The canonical iteration spec — loaded automatically every iteration |
 | `product-project-definition-brief.md` | Reference | Explains every GOAL.md section |
