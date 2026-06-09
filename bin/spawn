@@ -144,10 +144,19 @@ Commit it and exit. The orchestrator serializes all model changes.
   this worktree, never spawn other agents.
 - If ARCHITECTURE.md exists in this repo, follow its entities and
   conventions exactly.
+- If DESIGN.md exists in this repo, it is the design contract for anything
+  user-facing: build UI from its tokens and component specs, reuse existing
+  components before creating new ones, and take final strings from its
+  microcopy where defined. Where it is silent, do not stop — extrapolate
+  from its identity, principles, and token-usage rules. Never hardcode a
+  raw visual value where a token exists. If you introduce a genuinely new
+  shared component or token, say so in your final commit message so the
+  orchestrator can fold it back into DESIGN.md.
 - Never modify GOAL.md, TASKS.md, QUESTIONS.md, DECISIONS.md, FEEDBACK.md,
-  or ARCHITECTURE.md — integration is automatically refused for branches
-  that touch them. GOAL.md is the human's spec; ARCHITECTURE.md changes go
-  through the orchestrator's schema gate (see above).
+  ARCHITECTURE.md, or DESIGN.md — integration is automatically refused for
+  branches that touch them. GOAL.md is the human's spec; ARCHITECTURE.md
+  changes go through the orchestrator's schema gate (see above), and
+  DESIGN.md is amended only by the orchestrator.
 EOF
 
 # ── Write the runner and launch ───────────────────────────────────────────────

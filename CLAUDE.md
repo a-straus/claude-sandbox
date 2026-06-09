@@ -22,14 +22,15 @@ You run inside an isolated, network-firewalled container with
 | `FEEDBACK.md` | Shared | The human's inbox to you: they append requests under `## Inbox`; you convert each to backlog tasks and move it to `## Processed` with a disposition |
 | `DECISIONS.md` | You | One line per resolved decision — your durable memory. Read it every iteration; append when a question is answered |
 | `ARCHITECTURE.md` | You | The technical design: entities, relationships, conventions. Drafted + critiqued in the first iterations, then amended ONLY through the schema gate below. Workers follow it exactly and can never modify it |
+| `DESIGN.md` | Human seed / You | The design contract for everything user-facing: identity, principles, tokens, screens, components, microcopy. The human may fill it before the run; if the product has a UI and it is still the unfilled template, you fill it in the design phase. Afterwards you keep it in sync with the built product — amend it directly as components and tokens evolve, one Change log line each. Workers build UI from it, extrapolate from it where it is silent, and can never modify it. No UI in scope → leave it untouched |
 | `check.sh` | You | One fast command that builds + tests the project. Create it early, commit it |
 | `.release-done` | You | Write it (with a summary) only when GOAL.md §15 Release done is fully met — it stops the loop |
 
 State files are **committed** — `git log` on them is the audit trail, and in
 remote mode they sync through the origin so the human can read TASKS.md and
 answer QUESTIONS.md from GitHub. Commit your TASKS/QUESTIONS/DECISIONS/
-ARCHITECTURE/FEEDBACK changes at the end of the iteration (the outer loop
-also safety-nets this). Never
+ARCHITECTURE/DESIGN/FEEDBACK changes at the end of the iteration (the outer
+loop also safety-nets this). Never
 commit changes to GOAL.md. Runtime artifacts (`logs/`, `.worker-*`, `STOP`,
 `.release-done`, `.orchestrator.pid`) are git-excluded; never force-add them.
 
@@ -41,8 +42,8 @@ Do these in order. Skip steps that have nothing to do.
 
 1. **Read state.** `GOAL.md` (especially §3 non-goals, §11 tradeoffs, §13
    escalation, §15 done criteria), `TASKS.md`, `QUESTIONS.md`,
-   `FEEDBACK.md`, `DECISIONS.md`, `ARCHITECTURE.md`, and the output of
-   `list-agents`.
+   `FEEDBACK.md`, `DECISIONS.md`, `ARCHITECTURE.md`, `DESIGN.md` (when the
+   product has a UI), and the output of `list-agents`.
 
 2. **Process answers.** For each `[ANSWERED]` entry in QUESTIONS.md: append
    the resolution to DECISIONS.md, move the entry to `## Answered`, and
@@ -52,7 +53,8 @@ Do these in order. Skip steps that have nothing to do.
    convert it into right-sized Backlog tasks (a one-liner fix is one task;
    a feature ask becomes several), prioritized ahead of comparable existing
    work — the human took the time to ask. If it implies a data-model
-   change, route it through the schema gate. If it would cross a §3
+   change, route it through the schema gate; if it changes the design,
+   amend DESIGN.md in the same pass and queue the UI tasks. If it would cross a §3
    non-goal or contradict GOAL.md, escalate (step 7) instead of acting.
    Move the item to `## Processed` with a one-line disposition (task names,
    question reference, or "declined: crosses non-goal X").
@@ -63,8 +65,9 @@ Do these in order. Skip steps that have nothing to do.
      in TASKS.md.
    - **BLOCKED** (exit 3) → read the worker's BLOCKED.md. If its first line
      is `type: model-change`, this is NOT an escalation — handle it through
-     the schema gate (below). Otherwise: if GOAL.md, ARCHITECTURE.md, or
-     DECISIONS.md already resolves it, re-spawn the same branch with the
+     the schema gate (below). Otherwise: if GOAL.md, ARCHITECTURE.md,
+     DESIGN.md, or DECISIONS.md already resolves it, re-spawn the same
+     branch with the
      resolution added to the brief; only failing all that, escalate (step 7)
      and mark the task Blocked.
    - **check failed** (exit 5) → re-spawn the same branch; include the
@@ -105,6 +108,14 @@ Do these in order. Skip steps that have nothing to do.
      and conventions pasted into the brief verbatim, plus an explicit line:
      "Schema changes allowed: none" (or the exact list the schema gate
      approved). Default is none.
+   - Any task that builds or changes UI points at the design contract: the
+     brief names the DESIGN.md sections that apply (the D2 tokens always,
+     plus its D3 screen and the D4 components to reuse — sections are
+     addressable, so naming beats pasting). Workers compose the
+     design-foundation tokens and components and extrapolate from the
+     identity and principles for anything DESIGN.md doesn't specify — what
+     they never do is edit the file or hardcode a raw value where a token
+     exists.
    - Route models deliberately: routine implementation on the default
      ($WORKER_MODEL); trunk fixes, reviews, and genuinely hard tasks on
      `--model "$ORCH_MODEL"`.
@@ -130,7 +141,7 @@ Do these in order. Skip steps that have nothing to do.
    in remote mode.
 
 8. **Bookkeeping.** Bring TASKS.md fully up to date; commit the changed state
-   files (TASKS.md, QUESTIONS.md, DECISIONS.md, ARCHITECTURE.md,
+   files (TASKS.md, QUESTIONS.md, DECISIONS.md, ARCHITECTURE.md, DESIGN.md,
    FEEDBACK.md). Print a short report: what you integrated, spawned,
    escalated, and the project's current state.
 
@@ -148,21 +159,35 @@ Two minds design the architecture before any feature work starts:
 - **Iteration 1 — draft.** Expand GOAL.md §8 into ARCHITECTURE.md: entities,
   relationships, and the conventions workers get wrong when left to guess
   (naming, ID strategy, timestamps, deletion policy, migration policy).
-  Commit it. Then spawn exactly one worker — the critic, on the strong
+  If the product has a UI, settle DESIGN.md in the same pass: a DESIGN.md
+  the human already filled is the seeded design contract — adopt it as-is
+  (verify the ★ sections are present, note gaps for the critic); if it is
+  still the unfilled template, fill every section yourself (D0–D6:
+  identity, principles, tokens, screens, components, microcopy). Commit.
+  Then spawn exactly one worker — the critic, on the strong
   model: `spawn --model "$ORCH_MODEL" arch-critique "<brief>"`. Its brief:
-  read GOAL.md and ARCHITECTURE.md (explicitly permitted), challenge the
-  design — missing entities, §3 scope creep, simpler alternatives, future
-  pain points — and commit findings to CRITIQUE.md. Spawn nothing else.
+  read GOAL.md, ARCHITECTURE.md, and DESIGN.md (explicitly permitted), and
+  challenge the design — missing entities, §3 scope creep, simpler
+  alternatives, future pain points — committing findings to CRITIQUE.md. A human-seeded
+  DESIGN.md is challenged for feasibility and GOAL.md conflicts only —
+  taste is the human's. Spawn nothing else.
 - **Iteration 2 — reconcile.** Integrate the critique branch. Adopt what
   survives scrutiny, reject what doesn't, record every contested call in
-  DECISIONS.md, finalize ARCHITECTURE.md, `git rm CRITIQUE.md`, commit.
+  DECISIONS.md, finalize ARCHITECTURE.md (and DESIGN.md, if in play),
+  `git rm CRITIQUE.md`, commit.
   THEN decompose GOAL.md into the Backlog: independent, worker-sized tasks
   with MoSCoW priorities, sequenced per §11 — thinnest end-to-end slice
-  first. The first build task includes creating `check.sh`.
+  first. The first build task includes creating `check.sh`. When DESIGN.md
+  is in play, the first UI task is the design foundation: materialize the
+  D2 tokens verbatim as the project's token stylesheet and build the D4
+  base components; every later UI task composes those instead of inventing
+  styles.
 - Every ~5 integrations thereafter, queue a review task on the strong model
-  (`spawn --model "$ORCH_MODEL" review-NN "..."`): the reviewer reads GOAL.md
-  and ARCHITECTURE.md (read-only), audits the recent diffs against them,
-  writes findings to REVIEW.md, and commits. Next iteration: read REVIEW.md,
+  (`spawn --model "$ORCH_MODEL" review-NN "..."`): the reviewer reads GOAL.md,
+  ARCHITECTURE.md, and DESIGN.md (read-only), audits the recent diffs against
+  them — UI diffs additionally for token discipline (no raw visual values),
+  component reuse, and microcopy conformance — writes findings to REVIEW.md,
+  and commits. Next iteration: read REVIEW.md,
   convert real findings into Backlog items, `git rm REVIEW.md`, commit.
 
 ---
@@ -198,6 +223,16 @@ yourself — the human is never asked unless a §13 trigger is crossed.
 7. **Deny.** Record why in DECISIONS.md; re-spawn the requester with the
    prescribed workaround in its brief.
 
+**Design changes are lighter — no gate.** DESIGN.md has one writer (you)
+but needs no ceremony: when an integration lands a new shared component, or
+a task genuinely needs a token D2 lacks, fold it into DESIGN.md yourself
+(D4/D2 + a Change log line) in the same iteration, so the contract never
+trails the product by more than one pass. Decide design questions from the
+seeded identity and principles — that is what they are for; never ask the
+human to approve a component. The only design escalation is replacing a
+human-seeded identity (D0/D1) wholesale — that is §13 territory; everything
+below it is yours.
+
 ---
 
 ## Helpers in PATH
@@ -224,7 +259,9 @@ blockers by committing BLOCKED.md, and their full transcripts land in
   Wanting to change it IS an escalation — write the question instead.
 - **At most one schema-affecting task in flight, ever.** All data-model
   changes go through the schema gate; no brief grants schema changes unless
-  the gate approved them.
+  the gate approved them. DESIGN.md needs no gate but has one writer: you.
+  Workers never edit it; you fold design evolution back into it as it
+  lands.
 - **Default to deciding, not asking.** A question to the human about
   anything GOAL.md doesn't constrain is a failure of this framework, not
   diligence. Decide, record in DECISIONS.md, move.
