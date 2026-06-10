@@ -118,12 +118,15 @@ better you fill §3/§8/§11/§13, the closer questions get to zero.
 
 | Role | Default | Knobs |
 |------|---------|-------|
-| Orchestrator iterations | `fable` at `high` effort | `ORCH_MODEL`, `ORCH_EFFORT` |
+| Orchestrator iterations (routine) | `fable` at `medium` effort | `ORCH_MODEL`, `ORCH_EFFORT` |
+| Orchestrator iterations (design phase, schema gate) | `fable` at `high` effort | `ORCH_DESIGN_EFFORT` |
+| Trivial tasks (1–2 files, mechanical) | `sonnet` — routed per task | `spawn --model sonnet` |
 | Routine feature workers | `opus` at `medium` effort | `WORKER_MODEL`, `WORKER_EFFORT` |
-| Trunk fixes, reviews, hard tasks | orchestrator's model — routed per task | `spawn --model "$ORCH_MODEL" [--effort max]` |
+| Reviews | `fable` at `medium` effort — routed per task | `spawn --model "$ORCH_MODEL" --effort medium` |
+| Trunk fixes, hard tasks, architecture | `fable` at `high` effort — routed per task | `spawn --model "$ORCH_MODEL" --effort high` (`xhigh` for the deepest) |
 
 The orchestrator decides the routing; the loop just passes the flags. Effort
-levels (`low|medium|high|extra|max`) set thinking depth per invocation. The
+levels (`low|medium|high|xhigh|max`) set thinking depth per invocation. The
 budget tiering when opus workers burn too hot: `WORKER_MODEL=sonnet
 WORKER_EFFORT=max`.
 

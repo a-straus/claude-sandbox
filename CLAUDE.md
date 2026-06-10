@@ -10,6 +10,39 @@ file plus the state files; assume no memory of previous iterations.
 You run inside an isolated, network-firewalled container with
 `--dangerously-skip-permissions`.
 
+## Operating style
+
+When you have enough information to act, act. Do not re-derive facts already
+established in the conversation, re-litigate a decision the user has already
+made, or narrate options you will not pursue in user-facing messages. If you
+are weighing a choice, give a recommendation, not an exhaustive survey. This
+does not apply to thinking blocks. In this loop that means: state files +
+`list-agents` ARE the established facts — read them once, then act; anything
+already in DECISIONS.md is settled.
+
+Don't add features, refactor, or introduce abstractions beyond what the task
+requires. A bug fix doesn't need surrounding cleanup and a one-shot operation
+usually doesn't need a helper. Don't design for hypothetical future
+requirements: do the simplest thing that works well. Avoid premature
+abstraction and half-finished implementations. Don't add error handling,
+fallbacks, or validation for scenarios that cannot happen. Trust internal
+code and framework guarantees. Only validate at system boundaries (user
+input, external APIs). Don't use feature flags or backwards-compatibility
+shims when you can just change the code. This governs your own edits, the
+backlog you write, and the briefs you hand workers — scope all three to what
+GOAL.md actually needs, nothing speculative.
+
+Before reporting progress, audit each claim against a tool result from this
+session. Only report work you can point to evidence for; if something is not
+yet verified, say so explicitly. Report outcomes faithfully: if check.sh
+fails, say so with the output; if a step was skipped, say that; when
+something is done and verified, state it plainly without hedging.
+
+Before ending the iteration, check your final report: if it contains a plan
+or a promise about work you have not done ("I'll spawn X", "next I will
+integrate Y"), do that work now with tool calls. End only when this pass is
+genuinely complete.
+
 ---
 
 ## State files (in the project directory)
@@ -116,10 +149,25 @@ Do these in order. Skip steps that have nothing to do.
      identity and principles for anything DESIGN.md doesn't specify — what
      they never do is edit the file or hardcode a raw value where a token
      exists.
-   - Route models deliberately: routine implementation on the default
-     ($WORKER_MODEL); trunk fixes, reviews, and genuinely hard tasks on
-     `--model "$ORCH_MODEL"`, adding `--effort max` when a task needs the
-     deepest reasoning (workers default to medium effort).
+   - Route models and effort per task — this is your call, made at spawn
+     time. Match the engine to the job:
+     - Trivial — a mechanical change confined to one or two files with no
+       design judgment (copy tweaks, config values, a fix with an obvious
+       cause): `spawn --model sonnet <branch> "..."`.
+     - Standard — the default for feature work: plain `spawn`
+       ($WORKER_MODEL at $WORKER_EFFORT).
+     - Reviews — strong model, normal thinking: `spawn --model
+       "$ORCH_MODEL" --effort medium review-NN "..."`. Reading diffs
+       against the contracts needs judgment, not deep deliberation.
+     - Hard — trunk repair, cross-cutting changes, anything
+       correctness-critical: `spawn --model "$ORCH_MODEL" --effort high`;
+       raise to `--effort xhigh` only when a task needs the deepest
+       reasoning.
+     - Architecture and data-model work — the arch critic and the
+       schema-gate migration task: always `--model "$ORCH_MODEL"` at
+       `--effort high` minimum. Correctness of the model is worth the
+       tokens.
+     When unsure between two tiers, take the stronger one.
 
 7. **Escalate when required — which is rarely.** Technical and data-model
    design is delegated to you: decide within GOAL.md's bounds and record it
@@ -166,7 +214,8 @@ Two minds design the architecture before any feature work starts:
   still the unfilled template, fill every section yourself (D0–D6:
   identity, principles, tokens, screens, components, microcopy). Commit.
   Then spawn exactly one worker — the critic, on the strong
-  model: `spawn --model "$ORCH_MODEL" arch-critique "<brief>"`. Its brief:
+  model at deep effort:
+  `spawn --model "$ORCH_MODEL" --effort high arch-critique "<brief>"`. Its brief:
   read GOAL.md, ARCHITECTURE.md, and DESIGN.md (explicitly permitted), and
   challenge the design — missing entities, §3 scope creep, simpler
   alternatives, future pain points — committing findings to CRITIQUE.md. A human-seeded
@@ -184,7 +233,8 @@ Two minds design the architecture before any feature work starts:
   base components; every later UI task composes those instead of inventing
   styles.
 - Every ~5 integrations thereafter, queue a review task on the strong model
-  (`spawn --model "$ORCH_MODEL" review-NN "..."`): the reviewer reads GOAL.md,
+  at normal effort (`spawn --model "$ORCH_MODEL" --effort medium review-NN
+  "..."`): the reviewer reads GOAL.md,
   ARCHITECTURE.md, and DESIGN.md (read-only), audits the recent diffs against
   them — UI diffs additionally for token discipline (no raw visual values),
   component reuse, and microcopy conformance — writes findings to REVIEW.md,
@@ -212,8 +262,9 @@ yourself — the human is never asked unless a §13 trigger is crossed.
    if it would cross a §13 trigger (non-goal, irreversible data loss, paid
    dependency, external contract).
 4. **Apply (if approved).** Update ARCHITECTURE.md (+ Change log) and
-   DECISIONS.md, commit. Spawn ONE task, alone, on the strong model: apply
-   the migration and adapt all affected code, check.sh green. Integrate it.
+   DECISIONS.md, commit. Spawn ONE task, alone, on the strong model at deep
+   effort (`--model "$ORCH_MODEL" --effort high`): apply the migration and
+   adapt all affected code, check.sh green. Integrate it.
 5. **Resume.** Clear the pending marker. Re-spawn the requester against the
    new base — its brief now quotes the updated model (its old branch may
    need redoing; that is expected and fine). Resume normal spawning.
@@ -240,7 +291,7 @@ below it is yours.
 
 | Command | What it does |
 |---------|--------------|
-| `spawn [--model <m>] [--effort <e>] <branch> "<brief>"` | Launch a headless worker on its own branch + worktree. `--effort low\|medium\|high\|extra\|max` sets thinking depth (default high). Re-running for an existing branch resumes it. Refuses when capacity is full (exit 2) |
+| `spawn [--model <m>] [--effort <e>] <branch> "<brief>"` | Launch a headless worker on its own branch + worktree. `--effort low\|medium\|high\|xhigh\|max` sets thinking depth (default: $WORKER_EFFORT). Re-running for an existing branch resumes it. Refuses when capacity is full (exit 2) |
 | `integrate <branch>` | Gate (completion marker, BLOCKED.md, commits, protected files, check.sh), then merge to base and clean up. Exits: 2 not finished · 3 blocked · 4 no commits · 5 check failed · 6 conflict · 7 protected files |
 | `abandon <branch>` | Discard a branch and its worktree without merging |
 | `list-agents` | Classify every worker branch: RUNNING / FINISHED / BLOCKED / FAILED / STALE / ORPHAN, with the action each needs |

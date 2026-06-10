@@ -5,7 +5,7 @@
 # Model routing: workers default to $WORKER_MODEL at $WORKER_EFFORT (or the
 # CLI defaults if unset); pass --model to put a specific task on a stronger
 # model (trunk fixes, reviews, gnarly tasks) and --effort to set its
-# thinking depth (low|medium|high|extra|max).
+# thinking depth (low|medium|high|xhigh|max).
 #
 # The worker runs `claude -p` non-interactively: it receives the task brief as
 # its prompt (plus the quality bar and escalation rules from GOAL.md §12/§13),
@@ -142,9 +142,22 @@ Commit it and exit. The orchestrator serializes all model changes.
 ## Rules
 
 - Do this task and nothing else. Do not expand scope.
+- Don't add features, refactor, or introduce abstractions beyond what the
+  task requires. A bug fix doesn't need surrounding cleanup and a one-shot
+  operation usually doesn't need a helper. Don't design for hypothetical
+  future requirements: do the simplest thing that works well. Avoid
+  premature abstraction and half-finished implementations. Don't add error
+  handling, fallbacks, or validation for scenarios that cannot happen.
+  Trust internal code and framework guarantees. Only validate at system
+  boundaries (user input, external APIs). Don't use feature flags or
+  backwards-compatibility shims when you can just change the code.
+- When you have enough information to act, act — the brief is the spec; do
+  not re-survey the repo to re-derive what it already tells you.
 - Prove your work runs before declaring it done: run \`bash check.sh\` if the
   repo has one, or the relevant tests / the app itself. A clean compile is
-  not proof.
+  not proof. Report outcomes faithfully in your final summary and commit
+  messages: only claim what a command output in this session backs up; if
+  tests fail or a step was skipped, say so explicitly.
 - Commit ALL changes with clear, descriptive messages before exiting.
 - Never push, never open pull requests, never switch branches, never leave
   this worktree, never spawn other agents.

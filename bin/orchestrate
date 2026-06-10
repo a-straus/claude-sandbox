@@ -19,8 +19,15 @@
 #                               model owns orchestration, reviews, and hard tasks
 #   WORKER_MODEL=opus           default model for workers (per-task --model overrides;
 #                               budget tiering: WORKER_MODEL=sonnet WORKER_EFFORT=max)
-#   ORCH_EFFORT=high            thinking depth for orchestrator iterations
-#                               (low|medium|high|extra|max)
+#   ORCH_EFFORT=medium          thinking depth for routine orchestrator
+#                               iterations (low|medium|high|xhigh|max). Effort
+#                               is the primary cost/latency lever on fable;
+#                               medium handles routine passes (integrate,
+#                               spawn, bookkeeping) well
+#   ORCH_DESIGN_EFFORT=high     thinking depth for the iterations where design
+#                               correctness is at stake: empty task board
+#                               (architecture/design drafting + backlog
+#                               decomposition) and schema-gate iterations
 #   WORKER_EFFORT=medium        default thinking depth for workers (per-task
 #                               --effort overrides)
 #   ORCH_SYNC=0                 1 = pull GOAL.md edits / question answers from origin
@@ -55,7 +62,8 @@ MAX_ITERATIONS="${MAX_ITERATIONS:-200}"
 MAX_COST_USD="${MAX_COST_USD:-0}"
 ORCH_MODEL="${ORCH_MODEL:-fable}"
 WORKER_MODEL="${WORKER_MODEL:-opus}"
-ORCH_EFFORT="${ORCH_EFFORT:-high}"
+ORCH_EFFORT="${ORCH_EFFORT:-medium}"
+ORCH_DESIGN_EFFORT="${ORCH_DESIGN_EFFORT:-high}"
 WORKER_EFFORT="${WORKER_EFFORT:-medium}"
 ORCH_SYNC="${ORCH_SYNC:-0}"
 MAX_WORKERS="${MAX_WORKERS:-3}"
@@ -173,7 +181,8 @@ if (( ! fg )) && command -v tmux >/dev/null 2>&1; then
     cmd="$(printf '%q ' env \
         MAX_ITERATIONS="$MAX_ITERATIONS" MAX_COST_USD="$MAX_COST_USD" \
         ORCH_MODEL="$ORCH_MODEL" WORKER_MODEL="$WORKER_MODEL" \
-        ORCH_EFFORT="$ORCH_EFFORT" WORKER_EFFORT="$WORKER_EFFORT" \
+        ORCH_EFFORT="$ORCH_EFFORT" ORCH_DESIGN_EFFORT="$ORCH_DESIGN_EFFORT" \
+        WORKER_EFFORT="$WORKER_EFFORT" \
         ORCH_SYNC="$ORCH_SYNC" \
         MAX_WORKERS="$MAX_WORKERS" MAX_WORKER_TURNS="$MAX_WORKER_TURNS" \
         WORKER_TIMEOUT_SECS="$WORKER_TIMEOUT_SECS" \
@@ -324,8 +333,18 @@ while :; do
         fi
     fi
 
+    # Effort routing for the orchestrator itself: design-phase iterations
+    # (no tasks on the board yet — that's ARCHITECTURE/DESIGN drafting and
+    # backlog decomposition) and schema-gate iterations get deep thinking;
+    # routine passes run at ORCH_EFFORT.
+    effort="$ORCH_EFFORT"
+    if ! grep -q '^- ' TASKS.md 2>/dev/null \
+            || grep -q 'MODEL CHANGE PENDING' TASKS.md 2>/dev/null; then
+        effort="$ORCH_DESIGN_EFFORT"
+    fi
+
     fp_before="$(state_fingerprint "$repo")"
-    log_line "iteration $iter starting (Σ cost \$$total_cost)"
+    log_line "iteration $iter starting (effort ${effort:-default}, Σ cost \$$total_cost)"
 
     rc=0
     out_json="logs/orchestrator/iter-$iter.json"
@@ -333,7 +352,7 @@ while :; do
     cmd=(claude -p "$PROMPT" --dangerously-skip-permissions
          --max-turns "$ORCH_MAX_TURNS" --output-format json)
     [[ -n "$ORCH_MODEL" ]] && cmd+=(--model "$ORCH_MODEL")
-    [[ -n "$ORCH_EFFORT" ]] && cmd+=(--effort "$ORCH_EFFORT")
+    [[ -n "$effort" ]] && cmd+=(--effort "$effort")
     run_with_timeout "$ITERATION_TIMEOUT_SECS" "${cmd[@]}" \
         </dev/null >"$out_json" 2>"$err_log" || rc=$?
 
