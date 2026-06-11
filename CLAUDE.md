@@ -135,10 +135,15 @@ Do these in order. Skip steps that have nothing to do.
      **before** each spawn — state must survive a restart.
    - Briefs must be fully self-contained: context, exact file paths, tech
      stack, interfaces, acceptance criteria, and how to verify ("prove it
-     runs"). Workers can see the repo (including state files) but must be
-     able to complete the task from the brief alone; don't make them hunt
-     through GOAL.md — except review tasks, which are explicitly pointed at
-     GOAL.md.
+     runs"). Workers see all the source code but none of the orchestrator
+     context: GOAL.md, TASKS.md, QUESTIONS.md, DECISIONS.md, FEEDBACK.md,
+     and design/ are absent from their worktrees unless granted back with
+     `spawn --include <path>` (one flag per file; a directory grants its
+     contents). Grant exactly what the brief relies on — the design files
+     it names; `--include GOAL.md --include design` for review and critique
+     tasks — and record the flags with the task in TASKS.md so re-spawns
+     repeat them. Workers must be able to complete the task from the brief
+     alone.
    - Any task that touches data gets the relevant ARCHITECTURE.md entities
      and conventions pasted into the brief verbatim, plus an explicit line:
      "Schema changes allowed: none" (or the exact list the schema gate
@@ -146,7 +151,9 @@ Do these in order. Skip steps that have nothing to do.
    - Any task that builds or changes UI points at the design contract: the
      brief names the design/ files that apply — `design/INDEX.md` and
      `design/tokens.md` always, plus its `screens/<screen>.md` and, when it
-     composes shared components, `components.md` / `interaction.md`. Files
+     composes shared components, `components.md` / `interaction.md` — and
+     the spawn carries a matching `--include` per named file (unnamed
+     design files are not in the worker's tree). Files
      are the unit of context: name them, never point a worker at the whole
      directory, and never paste what a file name already delivers. Once the
      design foundation has landed in code, also name the token stylesheet
@@ -163,7 +170,8 @@ Do these in order. Skip steps that have nothing to do.
      - Standard — the default for feature work: plain `spawn`
        ($WORKER_MODEL at $WORKER_EFFORT).
      - Reviews — strong model, normal thinking: `spawn --model
-       "$ORCH_MODEL" --effort medium review-NN "..."`. Reading diffs
+       "$ORCH_MODEL" --effort medium --include GOAL.md --include design
+       review-NN "..."`. Reading diffs
        against the contracts needs judgment, not deep deliberation.
      - Hard — trunk repair, cross-cutting changes, anything
        correctness-critical: `spawn --model "$ORCH_MODEL" --effort high`;
@@ -222,7 +230,8 @@ Two minds design the architecture before any feature work starts:
   interaction.md, mockups.md). Commit.
   Then spawn exactly one worker — the critic, on the strong
   model at deep effort:
-  `spawn --model "$ORCH_MODEL" --effort high arch-critique "<brief>"`. Its brief:
+  `spawn --model "$ORCH_MODEL" --effort high --include GOAL.md
+  --include design arch-critique "<brief>"`. Its brief:
   read GOAL.md, ARCHITECTURE.md, and the design contract (explicitly
   permitted — the critic alone reads all of design/), and
   challenge the design — missing entities, §3 scope creep, simpler
@@ -238,7 +247,9 @@ Two minds design the architecture before any feature work starts:
   first. The first build task includes creating `check.sh`. When the design
   contract is in play, the first UI task is the design foundation, and it
   gets the strong model at deep effort
-  (`spawn --model "$ORCH_MODEL" --effort high design-foundation "..."`):
+  (`spawn --model "$ORCH_MODEL" --effort high --include design/INDEX.md
+  --include design/tokens.md --include design/components.md
+  --include design/interaction.md design-foundation "..."`):
   materialize the tokens.md tokens verbatim as the project's token
   stylesheet and build the components.md base components as a real,
   composable component library. Tokens spent here pay rent on every UI
@@ -247,7 +258,8 @@ Two minds design the architecture before any feature work starts:
   composes the built library instead of inventing styles or re-reading the
   whole contract.
 - Every ~5 integrations thereafter, queue a review task on the strong model
-  at normal effort (`spawn --model "$ORCH_MODEL" --effort medium review-NN
+  at normal effort (`spawn --model "$ORCH_MODEL" --effort medium
+  --include GOAL.md --include design review-NN
   "..."`): the reviewer reads GOAL.md,
   ARCHITECTURE.md, and the design contract (read-only; reviewers, like the
   critic, read all of design/), audits the recent diffs against
@@ -308,16 +320,19 @@ everything below it is yours.
 
 | Command | What it does |
 |---------|--------------|
-| `spawn [--model <m>] [--effort <e>] <branch> "<brief>"` | Launch a headless worker on its own branch + worktree. `--effort low\|medium\|high\|xhigh\|max` sets thinking depth (default: $WORKER_EFFORT). Re-running for an existing branch resumes it. Refuses when capacity is full (exit 2) |
+| `spawn [--model <m>] [--effort <e>] [--include <path>]... <branch> "<brief>"` | Launch a headless worker on its own branch + worktree. `--effort low\|medium\|high\|xhigh\|max` sets thinking depth (default: $WORKER_EFFORT). `--include` grants a context file (GOAL.md, a state file, a design/ file or the whole `design` dir) back into the worker's tree — pass one per file the brief names. Re-running for an existing branch resumes it (pass the same flags). Refuses when capacity is full (exit 2) |
 | `integrate <branch>` | Gate (completion marker, BLOCKED.md, commits, protected files, check.sh), then merge to base and clean up. Exits: 2 not finished · 3 blocked · 4 no commits · 5 check failed · 6 conflict · 7 protected files |
 | `abandon <branch>` | Discard a branch and its worktree without merging |
 | `list-agents` | Classify every worker branch: RUNNING / FINISHED / BLOCKED / FAILED / STALE / ORPHAN, with the action each needs |
 
-Workers are headless `claude -p` runs. They receive their brief plus the repo
-contents; `spawn` gives each worktree a sparse checkout that excludes
-CLAUDE.md, so this guide never loads for them — a worker's brief is its
+Workers are headless `claude -p` runs. They receive their brief plus the
+source code; `spawn` gives each worktree a sparse checkout that excludes
+CLAUDE.md, GOAL.md, TASKS.md, QUESTIONS.md, DECISIONS.md, FEEDBACK.md, and
+design/ — minus what `--include` grants back — so the orchestrator's context
+never pollutes a worker's. A worker's brief is its
 whole instruction set, which is why briefs must be self-contained and must
-name (not paste) the contract files that apply. They signal completion via
+name (not paste) the contract files that apply — and why every named
+contract file needs a matching `--include` on the spawn. They signal completion via
 a `.worker-done` marker, report
 blockers by committing BLOCKED.md, and their full transcripts land in
 `logs/<branch>.<timestamp>.jsonl`.

@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# spawn [--model <model>] [--effort <level>] <branch> "<task>" [base-ref]
+# spawn [--model <model>] [--effort <level>] [--include <path>]... \
+#       <branch> "<task>" [base-ref]
 # Launch a headless worker agent on its own branch + worktree.
 #
 # Model routing: workers default to $WORKER_MODEL at $WORKER_EFFORT (or the
@@ -18,21 +19,25 @@
 # to resume from the prior commits.
 #
 # Worktrees live under $WORKTREE_ROOT (default ~/worktrees), outside /workspace,
-# and get a sparse checkout that excludes CLAUDE.md, so the orchestrator guide
-# never loads into a worker's context — the brief is the worker's whole
-# instruction set.
+# and get a sparse checkout that excludes the orchestrator's context: CLAUDE.md,
+# GOAL.md, the state files, and design/. The brief is the worker's whole
+# instruction set; --include grants a context file back into the tree (the
+# design files a brief names, or GOAL.md + design for reviewers). All source
+# code is always present.
 #
 # Exit codes: 0 spawned · 1 usage/state error · 2 capacity full
 set -euo pipefail
 . "$(dirname "$0")/_lib.sh"
 
-usage='usage: spawn [--model <model>] [--effort <level>] <branch> "<task>" [base-ref]'
+usage='usage: spawn [--model <model>] [--effort <level>] [--include <path>]... <branch> "<task>" [base-ref]'
 model="${WORKER_MODEL:-}"
 effort="${WORKER_EFFORT:-}"
+includes=()
 while [[ "${1:-}" == --* ]]; do
     case "$1" in
-        --model)  model="${2:?$usage}";  shift 2 ;;
-        --effort) effort="${2:?$usage}"; shift 2 ;;
+        --model)   model="${2:?$usage}";  shift 2 ;;
+        --effort)  effort="${2:?$usage}"; shift 2 ;;
+        --include) includes+=("${2:?$usage}"); shift 2 ;;
         *) die "$usage (unknown option: $1)" ;;
     esac
 done
@@ -88,12 +93,32 @@ else
     git -C "$root" worktree add -b "$branch" "$wt" "$base"
 fi
 
-# Workers must never load the orchestrator guide: CLAUDE.md is committed (it
-# ships with the repo) and `claude -p` auto-loads it from the cwd. A
-# per-worktree sparse checkout leaves it out of the worker's tree without git
-# treating it as a deletion (skip-worktree), so `git add -A` cannot touch it.
-git -C "$wt" sparse-checkout set --no-cone '/*' '!/CLAUDE.md' \
-    || echo "WARNING: could not sparse-exclude CLAUDE.md from the worker worktree" >&2
+# Context isolation: the worker's tree carries all of the source code but
+# none of the orchestrator's context. CLAUDE.md (auto-loaded by `claude -p`
+# from the cwd), GOAL.md, the state files, and design/ are sparse-excluded
+# without git treating them as deletions (skip-worktree), so `git add -A`
+# cannot touch them. --include grants a file back: the design files a brief
+# names, or GOAL.md + design for reviewers. design/ is excluded per-file
+# because gitignore-style patterns cannot re-include a file whose parent
+# directory is excluded.
+included() {    # was this path (or an ancestor of it) granted via --include?
+    local f="$1" inc
+    for inc in ${includes[@]+"${includes[@]}"}; do
+        inc="${inc%/}"
+        [[ "$f" == "$inc" || "$f" == "$inc"/* ]] && return 0
+    done
+    return 1
+}
+sparse=('/*' '!/CLAUDE.md')
+for f in GOAL.md TASKS.md QUESTIONS.md DECISIONS.md FEEDBACK.md; do
+    included "$f" || sparse+=("!/$f")
+done
+while IFS= read -r f; do
+    [[ -n "$f" ]] || continue
+    included "$f" || sparse+=("!/$f")
+done < <(git -C "$wt" ls-tree -r --name-only HEAD -- design 2>/dev/null)
+git -C "$wt" sparse-checkout set --no-cone "${sparse[@]}" \
+    || echo "WARNING: could not sparse-exclude orchestrator context from the worker worktree" >&2
 
 # ── Build the worker prompt ───────────────────────────────────────────────────
 # Pull the quality bar and escalation rules from GOAL.md. (Flag-based awk: a
@@ -174,8 +199,8 @@ Commit it and exit. The orchestrator serializes all model changes.
   conventions exactly.
 - The design contract for anything user-facing lives in the design/
   directory. If your task touches UI, your brief names the design/ files
-  that apply: read those (plus design/INDEX.md for the identity and
-  principles) and do NOT read the rest of the directory. Where the named
+  that apply, and those are the only design files present in this worktree:
+  read them. Where the named
   files are silent, do not stop — extrapolate from the identity,
   principles, and token-usage rules. Once a token stylesheet and shared
   components exist in the code, compose those: reuse existing components

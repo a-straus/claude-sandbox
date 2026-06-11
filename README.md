@@ -88,6 +88,23 @@ yourself between runs.
 > the design machinery stripped out entirely — clone from it for
 > backend-only projects.
 
+### Worker context isolation
+
+Workers get all of the code and none of the orchestration context. `spawn`
+gives each worktree a sparse checkout that drops `CLAUDE.md`, `GOAL.md`, the
+state files (TASKS/QUESTIONS/DECISIONS/FEEDBACK), and `design/`; the
+orchestrator grants back exactly the files a brief names with
+`spawn --include <path>` — the named design files for a UI task, `GOAL.md`
+plus all of `design/` for reviewers and the critic. The brief is a worker's
+whole instruction set; what it doesn't name isn't in the tree to wander into.
+
+Source code is deliberately **never** excluded. Files sitting in a worktree
+cost no context until the model chooses to read them, a frontend worker
+being able to read the backend interface it imports against prevents bad
+commits, and `check.sh` has to run on the full tree. If worker token usage
+ever shows agents reading far outside their task, per-directory excludes
+would be the next lever — not before.
+
 ### The schema gate
 
 The data model is the one piece of state every task shares, so changes to it
@@ -446,7 +463,7 @@ waits.
 | `check.sh` | Orchestrator | The project's build+test gate; `integrate` runs it before every merge |
 | `CLAUDE.md` | Sandbox | The canonical iteration spec — loaded automatically every iteration |
 | `bin/orchestrate` | — | Preflight + the outer loop |
-| `bin/spawn` | Orchestrator | Launch a headless worker (`--model` to route harder tasks) |
+| `bin/spawn` | Orchestrator | Launch a headless worker (`--model` to route harder tasks, `--include` to grant context files into its tree) |
 | `bin/integrate` | Orchestrator | Gate + merge a finished branch (refuses unverified work) |
 | `bin/abandon` | Orchestrator | Discard a branch without merging |
 | `bin/list-agents` | — | Classify every worker branch and what it needs |
