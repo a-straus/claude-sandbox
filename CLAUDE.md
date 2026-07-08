@@ -80,9 +80,14 @@ Do these in order. Skip steps that have nothing to do.
    are amending them or writing a brief that needs their exact content),
    and the output of `list-agents`.
 
-2. **Process answers.** For each `[ANSWERED]` entry in QUESTIONS.md: append
-   the resolution to DECISIONS.md, move the entry to `## Answered`, and
-   unblock the related TASKS.md entries.
+2. **Process answers.** A question is answered the instant the human types
+   text under its `**Your answer:**` line — they never touch the marker, you
+   do. For each `[PENDING]` question that now carries a non-empty answer (and
+   any entry already marked `[ANSWERED]`): append the resolution to
+   DECISIONS.md, flip its heading `[PENDING]`→`[ANSWERED]`, move the entry to
+   `## Answered`, and unblock the related TASKS.md entries. Never wait on a
+   question the human has already answered just because its marker still says
+   `[PENDING]`.
 
 3. **Process feedback.** For each item under FEEDBACK.md `## Inbox`:
    convert it into right-sized Backlog tasks (a one-liner fix is one task;
@@ -170,12 +175,14 @@ Do these in order. Skip steps that have nothing to do.
      - Trivial — a mechanical change confined to one or two files with no
        design judgment (copy tweaks, config values, a fix with an obvious
        cause): `spawn --model sonnet <branch> "..."`.
-     - Standard — the default for feature work: plain `spawn`
-       ($WORKER_MODEL at $WORKER_EFFORT).
-     - Reviews — strong model, normal thinking: `spawn --model
-       "$ORCH_MODEL" --effort medium --include GOAL.md --include design
-       review-NN "..."`. Reading diffs
-       against the contracts needs judgment, not deep deliberation.
+     - Standard — the default for routine feature work: plain `spawn`
+       ($WORKER_MODEL at $WORKER_EFFORT — sonnet at high).
+     - Difficult — substantial multi-file feature work, tricky bugs, or
+       anything needing real design judgment short of correctness-critical:
+       `spawn --model opus --effort high <branch> "..."`.
+     - Reviews — strong model: `spawn --model
+       "$ORCH_MODEL" --effort high --include GOAL.md --include design
+       review-NN "..."`.
      - Hard — trunk repair, cross-cutting changes, anything
        correctness-critical: `spawn --model "$ORCH_MODEL" --effort high`;
        raise to `--effort xhigh` only when a task needs the deepest
@@ -261,7 +268,7 @@ Two minds design the architecture before any feature work starts:
   composes the built library instead of inventing styles or re-reading the
   whole contract.
 - Every ~5 integrations thereafter, queue a review task on the strong model
-  at normal effort (`spawn --model "$ORCH_MODEL" --effort medium
+  at high effort (`spawn --model "$ORCH_MODEL" --effort high
   --include GOAL.md --include design review-NN
   "..."`): the reviewer reads GOAL.md,
   ARCHITECTURE.md, and the design contract (read-only; reviewers, like the

@@ -125,6 +125,32 @@ state_fingerprint() {   # state_fingerprint <root>
     } | cksum
 }
 
+# A question is "answered" the moment the human types text under its
+# **Your answer:** line — they never touch the [PENDING]/[ANSWERED] marker;
+# the orchestrator flips it. This prints "<total> <answered>": the number of
+# ### [PENDING] question blocks, and how many of those already carry a
+# non-empty answer. A block runs from its ### [PENDING] heading to the next
+# ### or ## heading (or EOF); an answer is any non-blank line after the
+# **Your answer:** line within that block. Callers derive "still awaiting the
+# human" as total-answered, and treat answered>0 as work the LLM must process.
+pending_answer_stats() { # pending_answer_stats <questions-file> → "<total> <answered>"
+    [[ -f "$1" ]] || { echo "0 0"; return; }
+    awk '
+        function close_block() {
+            if (pending) { total++; if (has_answer) answered++ }
+            pending = 0; in_answer = 0; has_answer = 0
+        }
+        /^###[ \t]+\[PENDING\]/ { close_block(); pending = 1; next }
+        /^###[ \t]/             { close_block(); next }
+        /^##[ \t]/              { close_block(); next }
+        {
+            if (pending && $0 ~ /^\*\*Your answer:\*\*/) { in_answer = 1; next }
+            if (in_answer && $0 ~ /[^ \t]/) has_answer = 1
+        }
+        END { close_block(); printf "%d %d\n", total + 0, answered + 0 }
+    ' "$1"
+}
+
 # timeout(1) exists in the container (coreutils) but not on stock macOS;
 # degrade to no timeout rather than failing. -k: SIGKILL 30s after the TERM
 # if the command ignores it — a hung claude must never outlive its budget.

@@ -17,18 +17,16 @@
 #   ORCH_MODEL=fable            model for orchestrator iterations and for
 #                               `spawn --model "$ORCH_MODEL"` routing — the strongest
 #                               model owns orchestration, reviews, and hard tasks
-#   WORKER_MODEL=opus           default model for workers (per-task --model overrides;
-#                               budget tiering: WORKER_MODEL=sonnet WORKER_EFFORT=max)
-#   ORCH_EFFORT=medium          thinking depth for routine orchestrator
+#   WORKER_MODEL=sonnet         default model for workers (per-task --model overrides;
+#                               set WORKER_MODEL=opus to run all workers heavier)
+#   ORCH_EFFORT=high            thinking depth for routine orchestrator
 #                               iterations (low|medium|high|xhigh|max). Effort
-#                               is the primary cost/latency lever on fable;
-#                               medium handles routine passes (integrate,
-#                               spawn, bookkeeping) well
+#                               is the primary cost/latency lever on fable
 #   ORCH_DESIGN_EFFORT=high     thinking depth for the iterations where design
 #                               correctness is at stake: empty task board
 #                               (architecture/design drafting + backlog
 #                               decomposition) and schema-gate iterations
-#   WORKER_EFFORT=medium        default thinking depth for workers (per-task
+#   WORKER_EFFORT=high          default thinking depth for workers (per-task
 #                               --effort overrides)
 #   ORCH_SYNC=0                 1 = pull GOAL.md edits / question answers from origin
 #                               before each iteration and push state + integrated work
@@ -38,8 +36,10 @@
 #   WORKER_TIMEOUT_SECS=7200    per-worker wall-clock cap
 #   ITERATION_TIMEOUT_SECS=2700 per-orchestrator-iteration wall-clock cap
 #   ORCH_MAX_TURNS=100          per-iteration agentic-turn cap
-#   SLEEP_SECONDS=20            base sleep between iterations
-#   SLEEP_MAX=300               max sleep when nothing is changing (adaptive backoff)
+#   SLEEP_SECONDS=60            base sleep between iterations
+#   SLEEP_MAX=270               max sleep when nothing is changing (adaptive
+#                               backoff: 60→120→240→270; capped under the 5-min
+#                               prompt-cache TTL so idle iterations stay cached)
 #   FIREWALL_EVERY=10           re-resolve firewall allowlist every N iterations
 #   NET_RETRY_MAX=10            consecutive failed API reachability probes before
 #                               aborting (each probe failure: firewall refresh +
@@ -68,18 +68,18 @@ self="$(cd "$(dirname "$0")" && pwd)/orchestrate"
 MAX_ITERATIONS="${MAX_ITERATIONS:-200}"
 MAX_COST_USD="${MAX_COST_USD:-0}"
 ORCH_MODEL="${ORCH_MODEL:-fable}"
-WORKER_MODEL="${WORKER_MODEL:-opus}"
-ORCH_EFFORT="${ORCH_EFFORT:-medium}"
+WORKER_MODEL="${WORKER_MODEL:-sonnet}"
+ORCH_EFFORT="${ORCH_EFFORT:-high}"
 ORCH_DESIGN_EFFORT="${ORCH_DESIGN_EFFORT:-high}"
-WORKER_EFFORT="${WORKER_EFFORT:-medium}"
+WORKER_EFFORT="${WORKER_EFFORT:-high}"
 ORCH_SYNC="${ORCH_SYNC:-0}"
 MAX_WORKERS="${MAX_WORKERS:-3}"
 MAX_WORKER_TURNS="${MAX_WORKER_TURNS:-150}"
 WORKER_TIMEOUT_SECS="${WORKER_TIMEOUT_SECS:-7200}"
 ITERATION_TIMEOUT_SECS="${ITERATION_TIMEOUT_SECS:-2700}"
 ORCH_MAX_TURNS="${ORCH_MAX_TURNS:-100}"
-SLEEP_SECONDS="${SLEEP_SECONDS:-20}"
-SLEEP_MAX="${SLEEP_MAX:-300}"
+SLEEP_SECONDS="${SLEEP_SECONDS:-60}"
+SLEEP_MAX="${SLEEP_MAX:-270}"
 FIREWALL_EVERY="${FIREWALL_EVERY:-10}"
 NET_RETRY_MAX="${NET_RETRY_MAX:-10}"
 MAX_CONSECUTIVE_ERRORS="${MAX_CONSECUTIVE_ERRORS:-3}"
@@ -369,8 +369,14 @@ while :; do
     # in the backlog), poll in bash instead of burning an iteration.
     # Anchored: only real question headings count, not the template's
     # instruction comment that mentions the [PENDING] token.
-    pending=$(grep -c '^### \[PENDING\]' QUESTIONS.md 2>/dev/null) || pending=0
-    if (( pending > 0 )) \
+    # A question blocks only while it is still awaiting the human — a
+    # [PENDING] block with an empty **Your answer:**. The moment the human
+    # types an answer (they never flip the marker), it must wake the LLM so it
+    # can record the decision and flip [PENDING]→[ANSWERED] itself. So sleep
+    # only when there are unanswered questions AND none are freshly answered.
+    read -r q_total q_answered < <(pending_answer_stats QUESTIONS.md)
+    pending=$(( q_total - q_answered ))
+    if (( pending > 0 )) && (( q_answered == 0 )) \
             && (( $(running_workers "$repo") == 0 )) \
             && (( $(backlog_count) == 0 )) \
             && (( $(inbox_count) == 0 )); then
