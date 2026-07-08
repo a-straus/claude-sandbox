@@ -277,11 +277,12 @@ echo "[worker:$branch] exited \$ec — run 'integrate $branch' (or 'abandon $bra
 EOF
 chmod +x "$wt/.worker-run.sh"
 
+session="$(agents_session)"
 if command -v tmux >/dev/null 2>&1; then
-    tmux has-session -t agents 2>/dev/null || tmux new-session -d -s agents -n shell
+    tmux has-session -t "$session" 2>/dev/null || tmux new-session -d -s "$session" -n shell
     # Clear any stale done-window from a previous run of this branch.
     kill_branch_windows "$branch"
-    tmux new-window -t agents -n "$branch" -c "$wt" \
+    tmux new-window -t "$session" -n "$branch" -c "$wt" \
         "bash '$wt/.worker-run.sh'; exec \${SHELL:-bash}"
 else
     nohup bash "$wt/.worker-run.sh" >/dev/null 2>&1 &
@@ -291,4 +292,4 @@ fi
 echo "Spawned worker on branch '$branch'${resume:+ (resuming existing branch)}${model:+ [model: $model]}${effort:+ [effort: $effort]}"
 echo "  worktree: $wt"
 echo "  log:      $log"
-echo "  watch:    tmux attach -t agents    (window '$branch')"
+echo "  watch:    tmux attach -t $session    (window '$branch')"

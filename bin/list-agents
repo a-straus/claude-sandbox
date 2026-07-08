@@ -43,7 +43,7 @@ while IFS= read -r b; do
             echo "  $b — FINISHED ($commits commits) → integrate $b"
         fi
     elif worker_window_live "$b"; then
-        echo "  $b — RUNNING ($commits commits so far) → watch: tmux attach -t agents"
+        echo "  $b — RUNNING ($commits commits so far) → watch: tmux attach -t $(agents_session)"
     elif [[ -d "$wt" ]]; then
         echo "  $b — STALE (worker process gone, $commits commits) → re-spawn $b to" \
              "resume, or abandon $b"

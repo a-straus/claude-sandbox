@@ -58,6 +58,10 @@ fg=0
 if [[ "${1:-}" == "--fg" ]]; then fg=1; shift; fi
 repo="${1:-$PWD}"
 repo="$(cd "$repo" && pwd)"
+# Per-project tmux session names so several projects can run on this machine
+# at once (workers land in the matching agents session via _lib.sh).
+orch_session="orchestrator-$(basename "$repo")"
+agents_session_name="agents-$(basename "$repo")"
 sandbox="$(cd "$(dirname "$0")/.." && pwd)"
 self="$(cd "$(dirname "$0")" && pwd)/orchestrate"
 
@@ -145,7 +149,7 @@ fi
 pidfile="$repo/.orchestrator.pid"
 if [[ -f "$pidfile" ]] && kill -0 "$(cat "$pidfile")" 2>/dev/null; then
     echo "Orchestrator already running (pid $(cat "$pidfile"))."
-    echo "Attach: tmux attach -t orchestrator"
+    echo "Attach: tmux attach -t $orch_session"
     exit 1
 fi
 
@@ -187,8 +191,8 @@ fi
 # ── Re-launch into tmux unless asked to run in the foreground ────────────────
 
 if (( ! fg )) && command -v tmux >/dev/null 2>&1; then
-    if tmux has-session -t orchestrator 2>/dev/null; then
-        die "a tmux session named 'orchestrator' already exists — attach to it or kill it first"
+    if tmux has-session -t "$orch_session" 2>/dev/null; then
+        die "a tmux session named '$orch_session' already exists — attach to it or kill it first"
     fi
     cmd="$(printf '%q ' env \
         MAX_ITERATIONS="$MAX_ITERATIONS" MAX_COST_USD="$MAX_COST_USD" \
@@ -205,12 +209,12 @@ if (( ! fg )) && command -v tmux >/dev/null 2>&1; then
         MAX_CONSECUTIVE_ERRORS="$MAX_CONSECUTIVE_ERRORS" \
         WORKTREE_ROOT="$WORKTREE_ROOT" \
         bash "$self" --fg "$repo")"
-    tmux new-session -d -s orchestrator -n loop -c "$repo" "$cmd"
+    tmux new-session -d -s "$orch_session" -n loop -c "$repo" "$cmd"
     cat <<INFO
 Orchestrator started.
 
-  Watch the loop:    tmux attach -t orchestrator
-  Watch workers:     tmux attach -t agents          (once spawned)
+  Watch the loop:    tmux attach -t $orch_session
+  Watch workers:     tmux attach -t $agents_session_name          (once spawned)
   Live task board:   $repo/TASKS.md
   Answer questions:  $repo/QUESTIONS.md
   Pause it:          touch $repo/STOP               (resume: rm STOP, re-run orchestrate)
