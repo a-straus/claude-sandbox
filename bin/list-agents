@@ -59,10 +59,11 @@ echo "=== Capacity ==="
 echo "  $(running_workers "$root") running / ${MAX_WORKERS:-3} max"
 
 if [[ -f "$root/QUESTIONS.md" ]]; then
-    pending=$(grep -c '^### \[PENDING\]' "$root/QUESTIONS.md" 2>/dev/null) || pending=0
+    read -r q_total q_answered < <(pending_answer_stats "$root/QUESTIONS.md")
     echo ""
     echo "=== Pending questions ==="
-    echo "  $pending"
+    echo "  $(( q_total - q_answered )) awaiting the human, $q_answered answered" \
+         "→ process each answered one: record to DECISIONS.md, flip [PENDING]→[ANSWERED], unblock tasks"
 fi
 
 echo ""
