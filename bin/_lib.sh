@@ -38,8 +38,14 @@ worker_branches() { # worker_branches <root>
 
 # ── tmux helpers (always matched by exact window name, operated on by id) ────
 
+# Session names carry the project (main repo directory) name so several
+# projects can run their own orchestrator + workers on this machine at once.
+agents_session() {  # agents_session → e.g. agents-myproject
+    echo "agents-$(basename "$(repo_root)")"
+}
+
 window_id() {       # window_id <name> → @id or empty
-    tmux list-windows -t agents -F '#{window_id} #{window_name}' 2>/dev/null \
+    tmux list-windows -t "$(agents_session)" -F '#{window_id} #{window_name}' 2>/dev/null \
         | awk -v n="$1" '$2 == n {print $1; exit}'
 }
 

@@ -290,7 +290,7 @@ Whatever you leave unfilled, the orchestrator designs in the first iteration
 
 ```sh
 cd /workspace/projects/yourproject
-orchestrate                     # relaunches itself into tmux session "orchestrator"
+orchestrate                     # relaunches itself into tmux session "orchestrator-<project>"
 ```
 
 Useful variants:
@@ -309,8 +309,8 @@ All knobs are documented at the top of `bin/orchestrate`. Preflight checks
 ### Step 4 — Watch, pause, resume
 
 ```sh
-tmux attach -t orchestrator   # the loop: one status block per iteration
-tmux attach -t agents         # live workers, one window per branch
+tmux attach -t orchestrator-<project>   # the loop: one status block per iteration
+tmux attach -t agents-<project>         # live workers, one window per branch
 list-agents                   # branch states: RUNNING/FINISHED/BLOCKED/FAILED/STALE/ORPHAN
 ```
 
@@ -361,10 +361,10 @@ integrates the critique and fills the backlog → up to 3 worker windows →
 **Where to look while it runs:**
 
 ```sh
-tmux attach -t orchestrator      # one narrated status block per iteration
+tmux attach -t orchestrator-<project>   # one narrated status block per iteration
 git log --oneline                # ground truth: Integrate: merges landing
 list-agents                      # branch states at a glance
-tmux attach -t agents            # live worker streams
+tmux attach -t agents-<project>         # live worker streams
 tail -f logs/<branch>.*.jsonl    # a specific worker's full transcript
 ```
 
@@ -418,7 +418,7 @@ anywhere, and GitHub is the dashboard.
      iteration pulls it and proceeds
    - **Change the plan:** edit `GOAL.md` the same way — yours is the only
      hand that ever touches it
-4. SSH in for anything deeper: `tmux attach -t orchestrator`, `tail -f logs/…`,
+4. SSH in for anything deeper: `tmux attach -t orchestrator-<project>`, `tail -f logs/…`,
    `touch STOP`.
 
 Logs deliberately stay out of git (multi-MB transcripts per worker would
