@@ -100,7 +100,7 @@ Do these in order. Skip steps that have nothing to do.
    question reference, or "declined: crosses non-goal X").
 
 4. **Handle worker branches.** For each worker `list-agents` reports:
-   **FINISHED** → `integrate <branch>`, then move the task to Done in TASKS.md.
+   **FINISHED** → `integrate <branch>`; on success, move the task to Done in TASKS.md.
    For **any non-FINISHED state** (BLOCKED/exit 3 — including a
    `type: model-change` BLOCKED.md, check-failed/5, conflict/6, protected/7,
    no-commits/4, FAILED, STALE, ORPHAN) the ONLY procedure is
@@ -213,9 +213,12 @@ Do these in order. Skip steps that have nothing to do.
 When TASKS.md is empty, the first two iterations are a **design phase** — draft
 ARCHITECTURE.md (+ design/) → spawn one critic → reconcile → decompose the Backlog
 — before any build work. And every ~5 integrations thereafter, queue a **review**
-task. Both flows — the ONLY procedures for them — live in `guide/design-phase.md`:
-`Read` it before running the design phase or queuing a review; do not reconstruct
-the draft/critique/reconcile flow from memory.
+task; the iteration **after** a review branch integrates, `REVIEW.md` is on base and
+its findings must be converted to Backlog items (then `git rm REVIEW.md`). All three
+flows — the ONLY procedures for them — live in `guide/design-phase.md`: `Read` it
+whenever TASKS.md is empty, before queuing a review, **or when `REVIEW.md` or
+`CRITIQUE.md` exists on base**; do not reconstruct the draft/critique/reconcile flow
+from memory.
 
 ---
 

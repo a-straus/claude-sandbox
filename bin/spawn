@@ -134,7 +134,7 @@ included() {    # was this path (or an ancestor of it) granted via --include?
     return 1
 }
 sparse=('/*' '!/CLAUDE.md')
-for f in GOAL.md TASKS.md QUESTIONS.md DECISIONS.md FEEDBACK.md; do
+for f in GOAL.md TASKS.md QUESTIONS.md DECISIONS.md FEEDBACK.md LOOP-EFFICIENCY-AUDIT.md; do
     included "$f" || sparse+=("!/$f")
 done
 while IFS= read -r f; do
