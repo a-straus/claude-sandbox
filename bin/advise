@@ -12,17 +12,23 @@
 #   advise --stdin       [context-file ...]      # question read from stdin
 #
 # Model selection (precedence):  --model flag  >  $ADVISE_MODEL  >  default (opus)
-#   --model fable|opus|sonnet|haiku|<full-model-id>
+#   --model fable|opus|sonnet|haiku|<full-model-id>   (CLI resolves the aliases)
 # Effort:   --effort low|medium|high            (default: high — advice is rare + hard)
 # Brevity:  --words N                            (default: 150 — soft cap in the prompt)
 # Timeout:  --timeout S                          (default: 120s; on timeout -> fail-open)
 #
-# FAIL-OPEN CONTRACT: any advisor error, timeout, or empty result prints nothing to
-# stdout and exits 0. A caller using  g=$(advise ...)  simply proceeds with empty
-# guidance instead of stalling the loop. All diagnostics go to stderr.
+# FAIL-OPEN CONTRACT: any advisor error, timeout, empty result, OR malformed
+# invocation prints nothing to stdout and exits 0. A caller using  g=$(advise ...)
+# simply proceeds with empty guidance instead of stalling the loop. All diagnostics
+# go to stderr.
+#
+# NOTE: the advisor runs in a fresh empty working dir so it does NOT inherit the
+# caller's CLAUDE.md / project context (that context tax is the whole thing this
+# loop-efficiency work removes) and cannot stray into the caller's file tree.
 set -uo pipefail
 
-usage() { sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'; exit "${1:-0}"; }
+usage() { sed -n '2,24p' "$0" | sed 's/^# \{0,1\}//'; exit "${1:-0}"; }
+open() { [ -n "${1:-}" ] && echo "advise: $1 — failing open" >&2; exit 0; }
 
 MODEL="${ADVISE_MODEL:-opus}"
 EFFORT="high"
@@ -30,34 +36,37 @@ WORDS=150
 TIMEOUT=120
 STDIN_Q=0
 QUESTION=""
-CTX_FILES=()
+POS=()
 
 while [ $# -gt 0 ]; do
   case "$1" in
-    --model)   MODEL="$2"; shift 2 ;;
-    --effort)  EFFORT="$2"; shift 2 ;;
-    --words)   WORDS="$2"; shift 2 ;;
-    --timeout) TIMEOUT="$2"; shift 2 ;;
+    --model)   [ $# -ge 2 ] || open "--model needs a value"; MODEL="$2"; shift 2 ;;
+    --effort)  [ $# -ge 2 ] || open "--effort needs a value"; EFFORT="$2"; shift 2 ;;
+    --words)   [ $# -ge 2 ] || open "--words needs a value"; WORDS="$2"; shift 2 ;;
+    --timeout) [ $# -ge 2 ] || open "--timeout needs a value"; TIMEOUT="$2"; shift 2 ;;
     --stdin)   STDIN_Q=1; shift ;;
     -h|--help) usage 0 ;;
-    --) shift; break ;;
-    -*) echo "advise: unknown flag $1" >&2; usage 1 ;;
-    *)  if [ -z "$QUESTION" ] && [ "$STDIN_Q" -eq 0 ]; then QUESTION="$1"; else CTX_FILES+=("$1"); fi; shift ;;
+    --)        shift; while [ $# -gt 0 ]; do POS+=("$1"); shift; done ;;
+    -*)        open "unknown flag $1" ;;
+    *)         POS+=("$1"); shift ;;
   esac
 done
-# any remaining post-"--" args are context files
-while [ $# -gt 0 ]; do CTX_FILES+=("$1"); shift; done
 
-[ "$STDIN_Q" -eq 1 ] && QUESTION="$(cat)"
-if [ -z "${QUESTION// }" ]; then echo "advise: no question given" >&2; exit 0; fi
+# Resolve question vs context files (flag-order-independent).
+CTX_FILES=()
+if [ "$STDIN_Q" -eq 1 ]; then
+  QUESTION="$(cat)"
+  CTX_FILES=("${POS[@]:-}")
+elif [ "${#POS[@]}" -gt 0 ]; then
+  QUESTION="${POS[0]}"
+  [ "${#POS[@]}" -gt 1 ] && CTX_FILES=("${POS[@]:1}")
+fi
 
-# Resolve friendly aliases to full model ids (CLI also accepts aliases, but be explicit).
-case "$MODEL" in
-  fable)  MODEL="claude-fable-5" ;;
-  opus)   MODEL="claude-opus-4-8" ;;
-  sonnet) MODEL="claude-sonnet-5" ;;
-  haiku)  MODEL="claude-haiku-4-5-20251001" ;;
-esac
+# Fail open on an empty/whitespace-only question.
+[ -z "${QUESTION//[[:space:]]/}" ] && open "no question given"
+
+# Guard a non-numeric timeout (else the wait-loop test errors and never fires).
+case "$TIMEOUT" in ''|*[!0-9]*) echo "advise: non-numeric --timeout '$TIMEOUT', using 120" >&2; TIMEOUT=120 ;; esac
 
 SYS="You are an ADVISOR consulted at a single decision point inside an autonomous \
 coding loop. The executor (a cheaper model) keeps control; you give one terse, \
@@ -66,7 +75,7 @@ decisive recommendation it can act on immediately. Lead with the action \
 question, do NOT hedge with options unless the call is genuinely close. \
 Answer in under ${WORDS} words."
 
-# Assemble the user prompt: question + any context files inline.
+# Assemble the prompt: question + any context files inline.
 PROMPT="$QUESTION"
 for f in "${CTX_FILES[@]:-}"; do
   [ -z "$f" ] && continue
@@ -78,23 +87,29 @@ for f in "${CTX_FILES[@]:-}"; do
   fi
 done
 
-# Run the advisor with a hard timeout, fail-open on any failure.
+# Run the advisor in a fresh empty dir (no inherited CLAUDE.md/context), prompt on
+# stdin (avoids ARG_MAX/E2BIG on large context), with a hard timeout. Fail open on
+# any failure. `exec` makes the advisor claim the subshell PID so the timeout can
+# actually kill it (no un-signalled grandchild).
+work="$(mktemp -d -t advise.wd.XXXXXX)"
 tmp_out="$(mktemp -t advise.out.XXXXXX)"
-trap 'rm -f "$tmp_out"' EXIT
+tmp_err="$(mktemp -t advise.err.XXXXXX)"
+trap 'rm -rf "$work" "$tmp_out" "$tmp_err"' EXIT
 
-claude -p "$PROMPT" \
-  --model "$MODEL" \
-  --effort "$EFFORT" \
-  --append-system-prompt "$SYS" \
-  >"$tmp_out" 2>/dev/null &
+printf '%s' "$PROMPT" >"$work/prompt.txt"
+(
+  cd "$work" || exit 127
+  exec claude -p --model "$MODEL" --effort "$EFFORT" --append-system-prompt "$SYS" <prompt.txt
+) >"$tmp_out" 2>"$tmp_err" &
 pid=$!
 
 waited=0
 while kill -0 "$pid" 2>/dev/null; do
   if [ "$waited" -ge "$TIMEOUT" ]; then
-    kill "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
-    echo "advise: advisor timed out after ${TIMEOUT}s (model=$MODEL) — failing open" >&2
-    exit 0
+    kill "$pid" 2>/dev/null
+    for _ in 1 2 3 4 5; do kill -0 "$pid" 2>/dev/null || break; sleep 1; done
+    kill -9 "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
+    open "advisor timed out after ${TIMEOUT}s (model=$MODEL)"
   fi
   sleep 1; waited=$((waited+1))
 done
@@ -102,6 +117,7 @@ wait "$pid"; rc=$?
 
 if [ "$rc" -ne 0 ]; then
   echo "advise: advisor exited $rc (model=$MODEL) — failing open" >&2
+  tail -n 3 "$tmp_err" >&2 2>/dev/null || true
   exit 0
 fi
 
