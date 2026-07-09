@@ -1,0 +1,109 @@
+#!/usr/bin/env bash
+# advise — consult a strong "advisor" model at a decision point, print short guidance.
+#
+# Standalone + model-agnostic. Two intended callers:
+#   1. the claude-sandbox orchestrator loop (executor on a cheaper model, consult
+#      a strong advisor at the two high-leverage points: post-exploration before
+#      committing to an approach, and post-write/tests before declaring done);
+#   2. the OpenClaw cron triage (Haiku-executor classifies, escalates hard calls here).
+#
+# Usage:
+#   advise "<question>"  [context-file ...]
+#   advise --stdin       [context-file ...]      # question read from stdin
+#
+# Model selection (precedence):  --model flag  >  $ADVISE_MODEL  >  default (opus)
+#   --model fable|opus|sonnet|haiku|<full-model-id>
+# Effort:   --effort low|medium|high            (default: high — advice is rare + hard)
+# Brevity:  --words N                            (default: 150 — soft cap in the prompt)
+# Timeout:  --timeout S                          (default: 120s; on timeout -> fail-open)
+#
+# FAIL-OPEN CONTRACT: any advisor error, timeout, or empty result prints nothing to
+# stdout and exits 0. A caller using  g=$(advise ...)  simply proceeds with empty
+# guidance instead of stalling the loop. All diagnostics go to stderr.
+set -uo pipefail
+
+usage() { sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'; exit "${1:-0}"; }
+
+MODEL="${ADVISE_MODEL:-opus}"
+EFFORT="high"
+WORDS=150
+TIMEOUT=120
+STDIN_Q=0
+QUESTION=""
+CTX_FILES=()
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --model)   MODEL="$2"; shift 2 ;;
+    --effort)  EFFORT="$2"; shift 2 ;;
+    --words)   WORDS="$2"; shift 2 ;;
+    --timeout) TIMEOUT="$2"; shift 2 ;;
+    --stdin)   STDIN_Q=1; shift ;;
+    -h|--help) usage 0 ;;
+    --) shift; break ;;
+    -*) echo "advise: unknown flag $1" >&2; usage 1 ;;
+    *)  if [ -z "$QUESTION" ] && [ "$STDIN_Q" -eq 0 ]; then QUESTION="$1"; else CTX_FILES+=("$1"); fi; shift ;;
+  esac
+done
+# any remaining post-"--" args are context files
+while [ $# -gt 0 ]; do CTX_FILES+=("$1"); shift; done
+
+[ "$STDIN_Q" -eq 1 ] && QUESTION="$(cat)"
+if [ -z "${QUESTION// }" ]; then echo "advise: no question given" >&2; exit 0; fi
+
+# Resolve friendly aliases to full model ids (CLI also accepts aliases, but be explicit).
+case "$MODEL" in
+  fable)  MODEL="claude-fable-5" ;;
+  opus)   MODEL="claude-opus-4-8" ;;
+  sonnet) MODEL="claude-sonnet-5" ;;
+  haiku)  MODEL="claude-haiku-4-5-20251001" ;;
+esac
+
+SYS="You are an ADVISOR consulted at a single decision point inside an autonomous \
+coding loop. The executor (a cheaper model) keeps control; you give one terse, \
+decisive recommendation it can act on immediately. Lead with the action \
+(DO / STOP / RETHINK + what), then one short line of why. Do NOT restate the \
+question, do NOT hedge with options unless the call is genuinely close. \
+Answer in under ${WORDS} words."
+
+# Assemble the user prompt: question + any context files inline.
+PROMPT="$QUESTION"
+for f in "${CTX_FILES[@]:-}"; do
+  [ -z "$f" ] && continue
+  if [ -r "$f" ]; then
+    PROMPT+=$'\n\n----- context: '"$f"$' -----\n'
+    PROMPT+="$(cat "$f")"
+  else
+    echo "advise: warning: cannot read context file '$f'" >&2
+  fi
+done
+
+# Run the advisor with a hard timeout, fail-open on any failure.
+tmp_out="$(mktemp -t advise.out.XXXXXX)"
+trap 'rm -f "$tmp_out"' EXIT
+
+claude -p "$PROMPT" \
+  --model "$MODEL" \
+  --effort "$EFFORT" \
+  --append-system-prompt "$SYS" \
+  >"$tmp_out" 2>/dev/null &
+pid=$!
+
+waited=0
+while kill -0 "$pid" 2>/dev/null; do
+  if [ "$waited" -ge "$TIMEOUT" ]; then
+    kill "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
+    echo "advise: advisor timed out after ${TIMEOUT}s (model=$MODEL) — failing open" >&2
+    exit 0
+  fi
+  sleep 1; waited=$((waited+1))
+done
+wait "$pid"; rc=$?
+
+if [ "$rc" -ne 0 ]; then
+  echo "advise: advisor exited $rc (model=$MODEL) — failing open" >&2
+  exit 0
+fi
+
+# Emit guidance (empty output is a valid fail-open result).
+cat "$tmp_out"
