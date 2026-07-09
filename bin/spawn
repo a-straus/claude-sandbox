@@ -119,12 +119,12 @@ fi
 
 # Context isolation: the worker's tree carries all of the source code but
 # none of the orchestrator's context. CLAUDE.md (auto-loaded by `claude -p`
-# from the cwd), GOAL.md, the state files, and design/ are sparse-excluded
-# without git treating them as deletions (skip-worktree), so `git add -A`
-# cannot touch them. --include grants a file back: the design files a brief
-# names, or GOAL.md + design for reviewers. design/ is excluded per-file
-# because gitignore-style patterns cannot re-include a file whose parent
-# directory is excluded.
+# from the cwd), GOAL.md, the state files, design/, and guide/ (the orchestrator's
+# on-demand loop modules) are sparse-excluded without git treating them as
+# deletions (skip-worktree), so `git add -A` cannot touch them. --include grants a
+# file back: the design files a brief names, or GOAL.md + design for reviewers.
+# design/ and guide/ are excluded per-file because gitignore-style patterns cannot
+# re-include a file whose parent directory is excluded.
 included() {    # was this path (or an ancestor of it) granted via --include?
     local f="$1" inc
     for inc in ${includes[@]+"${includes[@]}"}; do
@@ -140,7 +140,7 @@ done
 while IFS= read -r f; do
     [[ -n "$f" ]] || continue
     included "$f" || sparse+=("!/$f")
-done < <(git -C "$wt" ls-tree -r --name-only HEAD -- design 2>/dev/null)
+done < <(git -C "$wt" ls-tree -r --name-only HEAD -- design guide 2>/dev/null)
 git -C "$wt" sparse-checkout set --no-cone "${sparse[@]}" \
     || echo "WARNING: could not sparse-exclude orchestrator context from the worker worktree" >&2
 
