@@ -38,7 +38,23 @@ project_id() {      # project_id <root> → readable name + stable path hash
 }
 
 worktree_path() {   # worktree_path <root> <branch>
-    echo "$WORKTREE_ROOT/$(project_id "$1")--$2"
+    local hashed legacy root_common legacy_common
+    hashed="$WORKTREE_ROOT/$(project_id "$1")--$2"
+    legacy="$WORKTREE_ROOT/$(basename "$1")--$2"
+    if [[ -e "$hashed/.git" || ! -e "$legacy/.git" ]]; then
+        echo "$hashed"
+        return
+    fi
+    # Upgrade compatibility: adopt an already-registered basename-only
+    # worktree only when it provably belongs to this repository. New worktrees
+    # always use the collision-resistant path.
+    root_common="$(git -C "$1" rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)"
+    legacy_common="$(git -C "$legacy" rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)"
+    if [[ -n "$root_common" && "$legacy_common" == "$root_common" ]]; then
+        echo "$legacy"
+    else
+        echo "$hashed"
+    fi
 }
 
 # All local branches except the base branch.
@@ -53,7 +69,17 @@ worker_branches() { # worker_branches <root>
 # Session names carry the project (main repo directory) name so several
 # projects can run their own orchestrator + workers on this machine at once.
 agents_session() {  # agents_session → e.g. agents-myproject
-    echo "agents-$(project_id "$(repo_root)")"
+    local root hashed legacy
+    root="$(repo_root)"
+    hashed="agents-$(project_id "$root")"
+    legacy="agents-$(basename "$root")"
+    if command -v tmux >/dev/null 2>&1 \
+            && ! tmux has-session -t "$hashed" 2>/dev/null \
+            && tmux has-session -t "$legacy" 2>/dev/null; then
+        echo "$legacy"
+    else
+        echo "$hashed"
+    fi
 }
 
 window_id() {       # window_id <name> → @id or empty
@@ -238,7 +264,16 @@ validate_goal_contract() {  # validate_goal_contract <GOAL.md>
         /^[[:space:]]*-[[:space:]]*$/ ||
         /^[[:space:]]*- \[[[:space:]]*\][[:space:]]*$/ ||
         /^- \*\*\[(Must|Should|Could)\]\*\*[[:space:]]*$/ ||
-        /^- \*\*(Stack \/ languages \/ frameworks|Architecture notes \/ patterns|Design contract|Key entities \/ data model|Integrations & dependencies|Hard constraints|Prioritization logic|Reversible vs\. irreversible|Required hygiene|Release done):\*\*[[:space:]]+\*\(/ ||
+        /\*\(Mandated, preferred, or "agent.s choice/ ||
+        /\*\(Anything that must — or must not — be used/ ||
+        /\*\(UI products: optionally fill the design\// ||
+        /\*\(Core objects and their relationships/ ||
+        /\*\(APIs, services, auth model/ ||
+        /\*\(Budget, infra, latency, data residency/ ||
+        /\*\(How to sequence when everything seems important/ ||
+        /\*\(Move fast on reversible; pause on one-way doors/ ||
+        /\*\(Tests — what kind and coverage/ ||
+        /\*\(All of the above, plus:/ ||
         /^#### Feature area [0-9]+:[[:space:]]*$/ {
             printf "GOAL contract: unresolved placeholder in %s (line %d): %s\n", section, NR, $0 > "/dev/stderr"
             bad=1

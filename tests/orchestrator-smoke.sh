@@ -23,6 +23,21 @@ mkdir -p "$tmp/a/app" "$tmp/b/app"
 [[ "$(project_id "$tmp/a/app")" != "$(project_id "$tmp/b/app")" ]] \
     || fail "project IDs collide"
 
+# Explicit italic answers such as *(none)* are content, not template prompts.
+goal="$tmp/GOAL.md"
+printf '%s\n' \
+    '### ★ 3 · Vision, Goals & Non-Goals' \
+    '### ★ 5 · User Stories & Acceptance Criteria' \
+    '### ★ 6 · Functional Requirements' \
+    '### ★ 8 · Technical Context & Constraints' \
+    '- **Hard constraints:** *(none)*' \
+    '### ★ 11 · Decision & Tradeoff Rules' \
+    '### ★ 12 · Quality Bar' \
+    '### ★ 13 · Escalation & Autonomy Boundaries' \
+    '### ★ 15 · Definition of Done' \
+    '### ★ 17 · Assumptions & Open Questions' > "$goal"
+validate_goal_contract "$goal" || fail "validator rejected an explicit italic answer"
+
 # The macOS fallback is a real deadline, not an unbounded execution.
 PATH=/usr/bin:/bin
 started="$(date +%s)"
@@ -45,7 +60,10 @@ git -C "$repo" config user.name Test
 git -C "$repo" config user.email test@example.invalid
 cp -R "$ROOT/bin" "$repo/bin"
 printf '%s\n' '#!/usr/bin/env bash' \
-    'test ! ( -f base.flag -a -f feature.flag )' > "$repo/check.sh"
+    'if test -f base.flag -a -f feature.flag; then' \
+    '  printf "%s\n" regenerated > feature.flag' \
+    '  exit 1' \
+    'fi' > "$repo/check.sh"
 printf '%s\n' original > "$repo/FEEDBACK.md"
 chmod +x "$repo/check.sh"
 git -C "$repo" add .
@@ -74,6 +92,13 @@ rc=0
 [[ "$(git -C "$repo" rev-parse main)" == "$base_before" ]] || fail "failed merge was not rolled back"
 [[ -z "$(non_state_dirty "$repo")" ]] || fail "rollback left source dirt"
 [[ "$(cat "$repo/FEEDBACK.md")" == 'human inbox edit' ]] || fail "rollback lost inbox edits"
+
+# Existing basename-only worktrees remain discoverable during migration.
+git -C "$repo" branch legacy-worker
+legacy_wt="$WORKTREE_ROOT/$(basename "$repo")--legacy-worker"
+git -C "$repo" worktree add -q "$legacy_wt" legacy-worker
+[[ "$(worktree_path "$repo" legacy-worker)" == "$legacy_wt" ]] \
+    || fail "legacy registered worktree was stranded by path hashing"
 
 # A finished worker has an explicit resume transition: archive the old marker,
 # launch the same branch, and atomically publish a new exact marker.
