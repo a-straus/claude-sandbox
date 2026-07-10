@@ -239,7 +239,7 @@ need no gate; that too is covered there.)
 
 | Command | What it does |
 |---------|--------------|
-| `spawn [--model <m>] [--effort <e>] [--include <path>]... <branch> "<brief>"` | Launch a headless worker on its own branch + worktree. `--effort low\|medium\|high\|xhigh\|max` sets thinking depth (default: $WORKER_EFFORT). `--include` grants a context file (GOAL.md, a state file, a design/ file or the whole `design` dir) back into the worker's tree — pass one per file the brief names. Re-running for an existing branch resumes it (pass the same flags). Refuses when capacity is full (exit 2) or the architecture is in flight — CRITIQUE.md on base, or uncommitted ARCHITECTURE.md/design changes (exit 3): reconcile and commit, then spawn |
+| `spawn [--resume] [--model <m>] [--effort <e>] [--include <path>]... <branch> "<brief>"` | Launch a headless worker on its own branch + worktree. Use `--resume` after a worker has written its completion marker (FAILED/BLOCKED/check or merge refusal); plain re-run remains for STALE/ORPHAN workers with no marker. `--effort low\|medium\|high\|xhigh\|max` sets thinking depth (default: $WORKER_EFFORT). `--include` grants a context file back into the worker's tree. Refuses when capacity is full (exit 2) or architecture is in flight (exit 3) |
 | `integrate <branch>` | Gate (completion marker, BLOCKED.md, commits, protected files, check.sh), then merge to base and clean up. Exits: 2 not finished · 3 blocked · 4 no commits · 5 check failed · 6 conflict · 7 protected files |
 | `abandon <branch>` | Discard a branch and its worktree without merging |
 | `list-agents` | Classify every worker branch: RUNNING / FINISHED / BLOCKED / FAILED / STALE / ORPHAN, with the action each needs |
