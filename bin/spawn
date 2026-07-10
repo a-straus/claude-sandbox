@@ -266,15 +266,20 @@ EOF
 ts="$(date +%Y%m%d-%H%M%S)"
 log="$root/logs/$branch.$ts.jsonl"
 
+# The harness (bin/, .devcontainer/) may live outside the project repo, so
+# resolve paths from this script's own location, not from $root.
+bindir="$(cd "$(dirname "$0")" && pwd -P)"
+harness_root="$(dirname "$bindir")"
+
 cat > "$wt/.worker-run.sh" <<EOF
 #!/usr/bin/env bash
 set -uo pipefail
 cd "$wt"
-. "$root/bin/_lib.sh"
+. "$bindir/_lib.sh"
 # Claude Code scrubs auth tokens from child-process environments, so workers
 # load credentials themselves from the gitignored container env file.
-if [ -z "\${CLAUDE_CODE_OAUTH_TOKEN:-}\${ANTHROPIC_API_KEY:-}" ] && [ -f "$root/.devcontainer/devcontainer.env" ]; then
-    set -a; . "$root/.devcontainer/devcontainer.env"; set +a
+if [ -z "\${CLAUDE_CODE_OAUTH_TOKEN:-}\${ANTHROPIC_API_KEY:-}" ] && [ -f "$harness_root/.devcontainer/devcontainer.env" ]; then
+    set -a; . "$harness_root/.devcontainer/devcontainer.env"; set +a
 fi
 echo "[worker:$branch] started \$(date '+%F %T')"
 echo "[worker:$branch] log: $log"
