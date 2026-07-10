@@ -68,6 +68,19 @@ repo="$(cd "$repo" && pwd)"
 project_key="$(project_id "$repo")"
 orch_session="orchestrator-$project_key"
 agents_session_name="agents-$project_key"
+legacy_orch_session="orchestrator-$(basename "$repo")"
+legacy_agents_session="agents-$(basename "$repo")"
+if command -v tmux >/dev/null 2>&1; then
+    if ! tmux has-session -t "$orch_session" 2>/dev/null \
+            && tmux has-session -t "$legacy_orch_session" 2>/dev/null; then
+        orch_session="$legacy_orch_session"
+        echo "NOTE: adopting legacy tmux session '$legacy_orch_session'; new runs use '$project_key'." >&2
+    fi
+    if ! tmux has-session -t "$agents_session_name" 2>/dev/null \
+            && tmux has-session -t "$legacy_agents_session" 2>/dev/null; then
+        agents_session_name="$legacy_agents_session"
+    fi
+fi
 sandbox="$(cd "$(dirname "$0")/.." && pwd)"
 self="$(cd "$(dirname "$0")" && pwd)/orchestrate"
 
@@ -94,14 +107,17 @@ MAX_RATE_LIMIT_WAITS="${MAX_RATE_LIMIT_WAITS:-48}"
 MAX_WORKER_RESUMES="${MAX_WORKER_RESUMES:-2}"
 
 for setting in MAX_ITERATIONS MAX_WORKERS MAX_WORKER_TURNS WORKER_TIMEOUT_SECS \
-        ITERATION_TIMEOUT_SECS ORCH_MAX_TURNS SLEEP_SECONDS SLEEP_MAX \
-        NET_RETRY_MAX MAX_CONSECUTIVE_ERRORS RATE_LIMIT_SLEEP \
-        MAX_RATE_LIMIT_WAITS MAX_WORKER_RESUMES; do
+        ITERATION_TIMEOUT_SECS ORCH_MAX_TURNS SLEEP_MAX NET_RETRY_MAX \
+        MAX_CONSECUTIVE_ERRORS MAX_RATE_LIMIT_WAITS; do
     value="${!setting}"
     [[ "$value" =~ ^[1-9][0-9]*$ ]] || die "$setting must be a positive integer (got '$value')"
 done
+for setting in SLEEP_SECONDS RATE_LIMIT_SLEEP MAX_WORKER_RESUMES; do
+    value="${!setting}"
+    [[ "$value" =~ ^[0-9]+$ ]] || die "$setting must be a non-negative integer (got '$value')"
+done
 [[ "$FIREWALL_EVERY" =~ ^[0-9]+$ ]] || die "FIREWALL_EVERY must be a non-negative integer"
-[[ "$MAX_COST_USD" =~ ^[0-9]+([.][0-9]+)?$ ]] || die "MAX_COST_USD must be a non-negative number"
+[[ "$MAX_COST_USD" =~ ^([0-9]+([.][0-9]*)?|[.][0-9]+)$ ]] || die "MAX_COST_USD must be a non-negative number"
 [[ "$ORCH_SYNC" == 0 || "$ORCH_SYNC" == 1 ]] || die "ORCH_SYNC must be 0 or 1"
 export MAX_WORKERS MAX_WORKER_TURNS WORKER_TIMEOUT_SECS WORKTREE_ROOT \
        MAX_WORKER_RESUMES ORCH_MODEL WORKER_MODEL WORKER_EFFORT
