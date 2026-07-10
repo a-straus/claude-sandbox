@@ -14,14 +14,14 @@
 #   MAX_ITERATIONS=200          stop after N iterations (re-run to continue)
 #   MAX_COST_USD=0              stop when cumulative API cost exceeds this (0 = off;
 #                               subscription auth reports ~$0, so this mainly guards API keys)
-#   ORCH_MODEL=fable            model for orchestrator iterations and for
-#                               `spawn --model "$ORCH_MODEL"` routing — the strongest
-#                               model owns orchestration, reviews, and hard tasks
+#   ORCH_MODEL=opus             model for orchestrator iterations; owns
+#                               decisions, integration, and trunk state
+#   ADVISOR_MODEL=fable         independent architecture/review critic
 #   WORKER_MODEL=sonnet         default model for workers (per-task --model overrides;
-#                               set WORKER_MODEL=opus to run all workers heavier)
+#                               implementation stays on the worker lane)
 #   ORCH_EFFORT=high            thinking depth for routine orchestrator
 #                               iterations (low|medium|high|xhigh|max). Effort
-#                               is the primary cost/latency lever on fable
+#                               is the primary cost/latency lever on opus
 #   ORCH_DESIGN_EFFORT=high     thinking depth for the iterations where design
 #                               correctness is at stake: empty task board
 #                               (architecture/design drafting + backlog
@@ -86,7 +86,8 @@ self="$(cd "$(dirname "$0")" && pwd)/orchestrate"
 
 MAX_ITERATIONS="${MAX_ITERATIONS:-200}"
 MAX_COST_USD="${MAX_COST_USD:-0}"
-ORCH_MODEL="${ORCH_MODEL:-fable}"
+ORCH_MODEL="${ORCH_MODEL:-opus}"
+ADVISOR_MODEL="${ADVISOR_MODEL:-fable}"
 WORKER_MODEL="${WORKER_MODEL:-sonnet}"
 ORCH_EFFORT="${ORCH_EFFORT:-high}"
 ORCH_DESIGN_EFFORT="${ORCH_DESIGN_EFFORT:-high}"
@@ -120,7 +121,7 @@ done
 [[ "$MAX_COST_USD" =~ ^([0-9]+([.][0-9]*)?|[.][0-9]+)$ ]] || die "MAX_COST_USD must be a non-negative number"
 [[ "$ORCH_SYNC" == 0 || "$ORCH_SYNC" == 1 ]] || die "ORCH_SYNC must be 0 or 1"
 export MAX_WORKERS MAX_WORKER_TURNS WORKER_TIMEOUT_SECS WORKTREE_ROOT \
-       MAX_WORKER_RESUMES ORCH_MODEL WORKER_MODEL WORKER_EFFORT
+       MAX_WORKER_RESUMES ORCH_MODEL ADVISOR_MODEL WORKER_MODEL WORKER_EFFORT
 
 # ── Preflight ─────────────────────────────────────────────────────────────────
 
@@ -226,7 +227,7 @@ if (( ! fg )) && command -v tmux >/dev/null 2>&1; then
     fi
     cmd="$(printf '%q ' env \
         MAX_ITERATIONS="$MAX_ITERATIONS" MAX_COST_USD="$MAX_COST_USD" \
-        ORCH_MODEL="$ORCH_MODEL" WORKER_MODEL="$WORKER_MODEL" \
+        ORCH_MODEL="$ORCH_MODEL" ADVISOR_MODEL="$ADVISOR_MODEL" WORKER_MODEL="$WORKER_MODEL" \
         ORCH_EFFORT="$ORCH_EFFORT" ORCH_DESIGN_EFFORT="$ORCH_DESIGN_EFFORT" \
         WORKER_EFFORT="$WORKER_EFFORT" \
         ORCH_SYNC="$ORCH_SYNC" \
@@ -337,7 +338,7 @@ guard_goal() {
     chmod 444 GOAL.md 2>/dev/null || true
 }
 
-log_line "orchestrator loop starting in $repo (max $MAX_ITERATIONS iterations, sync=$ORCH_SYNC${ORCH_MODEL:+, model=$ORCH_MODEL}${ORCH_EFFORT:+@$ORCH_EFFORT}, workers=$WORKER_MODEL${WORKER_EFFORT:+@$WORKER_EFFORT})"
+log_line "orchestrator loop starting in $repo (max $MAX_ITERATIONS iterations, sync=$ORCH_SYNC${ORCH_MODEL:+, model=$ORCH_MODEL}${ORCH_EFFORT:+@$ORCH_EFFORT}, advisor=$ADVISOR_MODEL, workers=$WORKER_MODEL${WORKER_EFFORT:+@$WORKER_EFFORT})"
 
 while :; do
     if [[ -f STOP ]]; then
