@@ -44,6 +44,11 @@
 #   NET_RETRY_MAX=10            consecutive failed API reachability probes before
 #                               aborting (each probe failure: firewall refresh +
 #                               backoff, without charging the iteration budget)
+#   RATE_LIMIT_SLEEP=300        wait between retries when the orchestrator's own
+#                               claude -p call returns a 429 session/rate limit
+#                               (a transient limit that resets on a schedule)
+#   MAX_RATE_LIMIT_WAITS=48     give up (abort) after this many consecutive 429
+#                               waits — ~4h at the default sleep; re-run later
 #   WORKTREE_ROOT=~/worktrees   where worker worktrees live (outside /workspace)
 #
 # While running:
@@ -83,6 +88,8 @@ SLEEP_MAX="${SLEEP_MAX:-270}"
 FIREWALL_EVERY="${FIREWALL_EVERY:-10}"
 NET_RETRY_MAX="${NET_RETRY_MAX:-10}"
 MAX_CONSECUTIVE_ERRORS="${MAX_CONSECUTIVE_ERRORS:-3}"
+RATE_LIMIT_SLEEP="${RATE_LIMIT_SLEEP:-300}"
+MAX_RATE_LIMIT_WAITS="${MAX_RATE_LIMIT_WAITS:-48}"
 export MAX_WORKERS MAX_WORKER_TURNS WORKER_TIMEOUT_SECS WORKTREE_ROOT \
        ORCH_MODEL WORKER_MODEL WORKER_EFFORT
 
@@ -207,6 +214,7 @@ if (( ! fg )) && command -v tmux >/dev/null 2>&1; then
         SLEEP_MAX="$SLEEP_MAX" FIREWALL_EVERY="$FIREWALL_EVERY" \
         NET_RETRY_MAX="$NET_RETRY_MAX" \
         MAX_CONSECUTIVE_ERRORS="$MAX_CONSECUTIVE_ERRORS" \
+        RATE_LIMIT_SLEEP="$RATE_LIMIT_SLEEP" MAX_RATE_LIMIT_WAITS="$MAX_RATE_LIMIT_WAITS" \
         WORKTREE_ROOT="$WORKTREE_ROOT" \
         bash "$self" --fg "$repo")"
     tmux new-session -d -s "$orch_session" -n loop -c "$repo" "$cmd"
@@ -258,6 +266,7 @@ iter=$iter_base
 total_cost=0
 errors=0
 net_fails=0
+rl_waits=0
 sleep_s="$SLEEP_SECONDS"
 
 backlog_count() {
@@ -422,11 +431,30 @@ while :; do
     result="$(jq -r '.result // empty' "$out_json" 2>/dev/null)" || result=""
     in_tok="$(jq -r '.usage.input_tokens // 0' "$out_json" 2>/dev/null)" || in_tok="?"
     out_tok="$(jq -r '.usage.output_tokens // 0' "$out_json" 2>/dev/null)" || out_tok="?"
+    api_err="$(jq -r '.api_error_status // empty' "$out_json" 2>/dev/null)" || api_err=""
 
     guard_goal
     state_commit
 
     if (( rc != 0 )) || [[ "$is_error" == "true" || -z "$cost" ]]; then
+        # A session/rate limit (HTTP 429) is transient, not a code fault: the
+        # call returns in <1s at $0, so three back-to-back 429s would otherwise
+        # trip the consecutive-error abort in about a minute. Wait for the reset
+        # window instead — don't consume the budget slot or count it as a
+        # failure. A hard cap (MAX_RATE_LIMIT_WAITS) still bounds the wait so a
+        # multi-hour account cap eventually aborts for the human to re-run.
+        if [[ "$api_err" == "429" ]] || [[ "$result" == *"session limit"* ]] \
+                || [[ "$result" == *"usage limit"* ]] || [[ "$result" == *"rate limit"* ]]; then
+            iter=$((iter - 1))            # nothing ran; don't consume the budget slot
+            rl_waits=$((rl_waits + 1))
+            if (( rl_waits > MAX_RATE_LIMIT_WAITS )); then
+                log_line "aborting: still rate-limited after $rl_waits waits (~$(( rl_waits * RATE_LIMIT_SLEEP / 60 )) min) — re-run later. Last: ${result:-HTTP 429}"
+                exit 1
+            fi
+            log_line "rate/session limit (${result:-HTTP 429}) — waiting ${RATE_LIMIT_SLEEP}s for reset (wait $rl_waits/$MAX_RATE_LIMIT_WAITS), not counting as a failure"
+            sleep "$RATE_LIMIT_SLEEP"
+            continue
+        fi
         errors=$((errors + 1))
         log_line "iteration $iter FAILED (exit $rc, error #$errors/$MAX_CONSECUTIVE_ERRORS) — see $err_log"
         tail -5 "$err_log" 2>/dev/null || true
@@ -441,6 +469,7 @@ while :; do
         continue
     fi
     errors=0
+    rl_waits=0
 
     total_cost="$(awk -v a="$total_cost" -v b="$cost" 'BEGIN{printf "%.4f", a + b}')"
     log_line "iteration $iter done — \$$cost ($turns turns, $in_tok in / $out_tok out tokens, session $session)"
