@@ -22,7 +22,7 @@
 #   advise --stdin       [context-file ...]      # question read from stdin
 #
 # Model selection (precedence):  --model flag  >  $ADVISE_MODEL  >  default
-#   default advisor: openai/gpt-5.6-sol  (cross-provider diversity vs a Claude executor)
+#   default advisor: claude-cli/claude-fable-5
 #   --model <provider/model>   e.g. claude-cli/claude-opus-4-8, anthropic/claude-opus-4-8
 # Effort:   --effort low|medium|high   -> maps to --thinking (default: high)
 # Brevity:  --words N                  (default: 150 — soft cap in the prompt)
@@ -37,7 +37,7 @@ set -uo pipefail
 usage() { sed -n '2,32p' "$0" | sed 's/^# \{0,1\}//'; exit "${1:-0}"; }
 open()  { [ -n "${1:-}" ] && echo "advise: $1 — failing open" >&2; exit 0; }
 
-MODEL="${ADVISE_MODEL:-openai/gpt-5.6-sol}"
+MODEL="${ADVISE_MODEL:-claude-cli/claude-fable-5}"
 EFFORT="high"
 WORDS=150
 TIMEOUT=120

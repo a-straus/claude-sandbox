@@ -113,9 +113,9 @@ Do these in order. Skip steps that have nothing to do.
    - Small and obvious cause (missing import, broken path, one-liner): fix it
      yourself, re-run check.sh, commit. Never exit the iteration leaving the
      base branch dirty or mid-fix — commit a working state or revert.
-   - Anything more: `spawn --model "$ORCH_MODEL" fix-trunk "<brief with the
-     full failure output>"` — trunk repair gets your strongest model (fall
-     back to plain `spawn` if ORCH_MODEL is unset).
+   - Anything more: `spawn --model "$WORKER_MODEL" --effort xhigh fix-trunk
+     "<brief with the full failure output>"` — implementation remains on the
+     Sonnet worker lane while the Opus orchestrator owns diagnosis and review.
 
 6. **Spawn new work.** Fill capacity (`spawn` enforces the cap) from the
    TASKS.md Backlog, highest priority first:
@@ -160,20 +160,17 @@ Do these in order. Skip steps that have nothing to do.
        cause): `spawn --model sonnet <branch> "..."`.
      - Standard — the default for routine feature work: plain `spawn`
        ($WORKER_MODEL at $WORKER_EFFORT — sonnet at high).
-     - Difficult — substantial multi-file feature work, tricky bugs, or
-       anything needing real design judgment short of correctness-critical:
-       `spawn --model opus --effort high <branch> "..."`.
-     - Reviews — strong model: `spawn --model
-       "$ORCH_MODEL" --effort high --include GOAL.md --include design
+     - Difficult — substantial multi-file feature work or tricky bugs:
+       `spawn --model "$WORKER_MODEL" --effort high <branch> "..."`.
+     - Reviews — independent advisor model: `spawn --model
+       "$ADVISOR_MODEL" --effort high --include GOAL.md --include design
        review-NN "..."`.
-     - Hard — trunk repair, cross-cutting changes, anything
-       correctness-critical: `spawn --model "$ORCH_MODEL" --effort high`;
-       raise to `--effort xhigh` only when a task needs the deepest
-       reasoning.
-     - Architecture and data-model work — the arch critic and the
-       schema-gate migration task: always `--model "$ORCH_MODEL"` at
-       `--effort high` minimum. Correctness of the model is worth the
-       tokens.
+     - Hard — cross-cutting or correctness-critical implementation work:
+       `spawn --model "$WORKER_MODEL" --effort xhigh`.
+     - Architecture and data-model work — the architecture critic uses
+       `--model "$ADVISOR_MODEL" --effort high`; schema-gate migration work
+       uses `--model "$WORKER_MODEL" --effort high`. The Opus orchestrator
+       retains decision and integration authority over both.
      When unsure between two tiers, take the stronger one.
 
 7. **Escalate when required — which is rarely.** Technical and data-model

@@ -21,9 +21,9 @@ never asked unless a §13 trigger is crossed.
    amend, or deny on your own authority; escalate only if it would cross a §13
    trigger (non-goal, irreversible data loss, paid dependency, external contract).
 4. **Apply (if approved).** Update ARCHITECTURE.md (+ Change log) and DECISIONS.md,
-   commit. Spawn ONE task, alone, on the strong model at deep effort
-   (`--model "$ORCH_MODEL" --effort high`): apply the migration and adapt all
-   affected code, check.sh green. Integrate it.
+   commit. Spawn ONE task, alone, on the worker model at deep effort
+   (`--model "$WORKER_MODEL" --effort high`): apply the migration and adapt all
+   affected code, check.sh green. The Opus orchestrator reviews and integrates it.
 5. **Resume.** Clear the pending marker. Re-spawn the requester against the new base
    — its brief now quotes the updated model (its old branch may need redoing; that
    is expected and fine). Resume normal spawning.

@@ -17,8 +17,8 @@ Two minds design the architecture before any feature work starts:
   present, note gaps for the critic); if it is still the unfilled template, fill
   every file yourself (INDEX.md identity + principles, tokens.md, screens/,
   components.md, interaction.md, mockups.md). Commit. Then spawn exactly one worker
-  — the critic, on the strong model at deep effort:
-  `spawn --model "$ORCH_MODEL" --effort high --include GOAL.md --include design
+  — the critic, on the independent advisor model at deep effort:
+  `spawn --model "$ADVISOR_MODEL" --effort high --include GOAL.md --include design
   arch-critique "<brief>"`. Its brief: read GOAL.md, ARCHITECTURE.md, and the
   design contract (explicitly permitted — the critic alone reads all of design/),
   and challenge the design — missing entities, §3 scope creep, simpler
@@ -32,7 +32,7 @@ Two minds design the architecture before any feature work starts:
   MoSCoW priorities, sequenced per §11 — thinnest end-to-end slice first. The first
   build task includes creating `check.sh`. When the design contract is in play, the
   first UI task is the design foundation, and it gets the strong model at deep
-  effort (`spawn --model "$ORCH_MODEL" --effort high --include design/INDEX.md
+    effort (`spawn --model "$WORKER_MODEL" --effort high --include design/INDEX.md
   --include design/tokens.md --include design/components.md
   --include design/interaction.md design-foundation "..."`): materialize the
   tokens.md tokens verbatim as the project's token stylesheet and build the
@@ -44,8 +44,8 @@ Two minds design the architecture before any feature work starts:
 
 ## Review cadence
 
-Every ~5 integrations thereafter, queue a review task on the strong model at high
-effort (`spawn --model "$ORCH_MODEL" --effort high --include GOAL.md
+Every ~5 integrations thereafter, queue a review task on the independent advisor model at high
+effort (`spawn --model "$ADVISOR_MODEL" --effort high --include GOAL.md
 --include design review-NN "..."`): the reviewer reads GOAL.md, ARCHITECTURE.md,
 and the design contract (read-only; reviewers, like the critic, read all of
 design/), audits the recent diffs against them — UI diffs additionally for token
