@@ -8,7 +8,10 @@
 # no tools, no CLAUDE.md, no file-reading by the model — so there is nothing to
 # inherit and no neutral-cwd trick needed.
 #
-# Two intended callers (both on this Mac):
+# Standalone only: this tool is intentionally NOT wired into orchestrate or
+# spawn. Operators may call it directly from either OpenClaw or this repo; no
+# loop behavior should be inferred merely from its presence. Possible future
+# callers (both on this Mac):
 #   1. the orchestrator loop (executor on a cheaper model; consult a strong
 #      advisor at the two high-leverage points — post-exploration before
 #      committing to an approach, and post-write/tests before declaring done);

@@ -63,10 +63,11 @@ fg=0
 if [[ "${1:-}" == "--fg" ]]; then fg=1; shift; fi
 repo="${1:-$PWD}"
 repo="$(cd "$repo" && pwd)"
-# Per-project tmux session names so several projects can run on this machine
-# at once (workers land in the matching agents session via _lib.sh).
-orch_session="orchestrator-$(basename "$repo")"
-agents_session_name="agents-$(basename "$repo")"
+# Include a stable hash of the absolute repo path so two projects with the
+# same basename cannot collide in tmux or under WORKTREE_ROOT.
+project_key="$(project_id "$repo")"
+orch_session="orchestrator-$project_key"
+agents_session_name="agents-$project_key"
 sandbox="$(cd "$(dirname "$0")/.." && pwd)"
 self="$(cd "$(dirname "$0")" && pwd)/orchestrate"
 
@@ -90,8 +91,20 @@ NET_RETRY_MAX="${NET_RETRY_MAX:-10}"
 MAX_CONSECUTIVE_ERRORS="${MAX_CONSECUTIVE_ERRORS:-3}"
 RATE_LIMIT_SLEEP="${RATE_LIMIT_SLEEP:-300}"
 MAX_RATE_LIMIT_WAITS="${MAX_RATE_LIMIT_WAITS:-48}"
+MAX_WORKER_RESUMES="${MAX_WORKER_RESUMES:-2}"
+
+for setting in MAX_ITERATIONS MAX_WORKERS MAX_WORKER_TURNS WORKER_TIMEOUT_SECS \
+        ITERATION_TIMEOUT_SECS ORCH_MAX_TURNS SLEEP_SECONDS SLEEP_MAX \
+        NET_RETRY_MAX MAX_CONSECUTIVE_ERRORS RATE_LIMIT_SLEEP \
+        MAX_RATE_LIMIT_WAITS MAX_WORKER_RESUMES; do
+    value="${!setting}"
+    [[ "$value" =~ ^[1-9][0-9]*$ ]] || die "$setting must be a positive integer (got '$value')"
+done
+[[ "$FIREWALL_EVERY" =~ ^[0-9]+$ ]] || die "FIREWALL_EVERY must be a non-negative integer"
+[[ "$MAX_COST_USD" =~ ^[0-9]+([.][0-9]+)?$ ]] || die "MAX_COST_USD must be a non-negative number"
+[[ "$ORCH_SYNC" == 0 || "$ORCH_SYNC" == 1 ]] || die "ORCH_SYNC must be 0 or 1"
 export MAX_WORKERS MAX_WORKER_TURNS WORKER_TIMEOUT_SECS WORKTREE_ROOT \
-       ORCH_MODEL WORKER_MODEL WORKER_EFFORT
+       MAX_WORKER_RESUMES ORCH_MODEL WORKER_MODEL WORKER_EFFORT
 
 # ── Preflight ─────────────────────────────────────────────────────────────────
 
@@ -112,20 +125,11 @@ if [[ ! -d "$repo/design" && -d "$sandbox/design" ]]; then
 fi
 
 [[ -f "$repo/GOAL.md" ]] || die "no GOAL.md in $repo and no template to copy"
+validate_state_contract "$repo" || die "state-file headings are malformed; restore the canonical templates before running"
 
-# Refuse to start on an unfilled GOAL.md — vague goals make generic products.
-unfilled=()
-grep -q '^- \*\*One-line vision:\*\*$'  "$repo/GOAL.md" && unfilled+=("§3 one-line vision")
-grep -q '^- \*\*\[Must\]\*\*$'          "$repo/GOAL.md" && unfilled+=("§5 user stories")
-grep -q '^- \*\*Stack / languages / frameworks:\*\* \*(Mandated' "$repo/GOAL.md" \
-                                                      && unfilled+=("§8 stack")
-grep -q '^- \*\*Acceptable:\*\*$'       "$repo/GOAL.md" && unfilled+=("§12 quality bar")
-if (( ${#unfilled[@]} > 0 )); then
-    echo "ERROR: GOAL.md still has unfilled ★ sections:" >&2
-    printf '  - %s\n' "${unfilled[@]}" >&2
-    echo "Complete them before starting — each section has inline guidance." >&2
-    exit 1
-fi
+# Refuse every unresolved placeholder in every ★ autonomy-critical section.
+validate_goal_contract "$repo/GOAL.md" \
+    || die "GOAL.md has incomplete ★ sections; replace each reported template field with explicit policy"
 
 # Git identity — fail now, not three hours in at the first worker commit.
 if ! git -C "$repo" var GIT_AUTHOR_IDENT >/dev/null 2>&1; then
@@ -190,9 +194,12 @@ fi
 # (Humans: chmod u+w GOAL.md to edit locally, or edit via GitHub with ORCH_SYNC.)
 chmod 444 "$repo/GOAL.md" 2>/dev/null || true
 
-if [[ -n "$(git -C "$repo" status --porcelain)" ]]; then
-    echo "WARNING: the repo has uncommitted changes; workers branch from HEAD" >&2
-    echo "and will not see them." >&2
+dirty="$(non_state_dirty "$repo")"
+if [[ -n "$dirty" ]]; then
+    echo "ERROR: repo has uncommitted source changes outside orchestrator state files:" >&2
+    printf '%s\n' "$dirty" | sed 's/^/  /' >&2
+    echo "Commit, stash, or remove them before autonomous execution." >&2
+    exit 1
 fi
 
 # ── Re-launch into tmux unless asked to run in the foreground ────────────────
@@ -208,7 +215,7 @@ if (( ! fg )) && command -v tmux >/dev/null 2>&1; then
         WORKER_EFFORT="$WORKER_EFFORT" \
         ORCH_SYNC="$ORCH_SYNC" \
         MAX_WORKERS="$MAX_WORKERS" MAX_WORKER_TURNS="$MAX_WORKER_TURNS" \
-        WORKER_TIMEOUT_SECS="$WORKER_TIMEOUT_SECS" \
+        WORKER_TIMEOUT_SECS="$WORKER_TIMEOUT_SECS" MAX_WORKER_RESUMES="$MAX_WORKER_RESUMES" \
         ITERATION_TIMEOUT_SECS="$ITERATION_TIMEOUT_SECS" \
         ORCH_MAX_TURNS="$ORCH_MAX_TURNS" SLEEP_SECONDS="$SLEEP_SECONDS" \
         SLEEP_MAX="$SLEEP_MAX" FIREWALL_EVERY="$FIREWALL_EVERY" \
@@ -270,11 +277,11 @@ rl_waits=0
 sleep_s="$SLEEP_SECONDS"
 
 backlog_count() {
-    awk '/^## Backlog/{f=1; next} /^## /{f=0} f && /^- /' TASKS.md 2>/dev/null | wc -l | tr -d ' '
+    section_item_count TASKS.md '## Backlog'
 }
 
 inbox_count() {
-    awk '/^## Inbox/{f=1; next} /^## /{f=0} f && /^- /' FEEDBACK.md 2>/dev/null | wc -l | tr -d ' '
+    section_item_count FEEDBACK.md '## Inbox'
 }
 
 log_line() {
@@ -346,6 +353,10 @@ while :; do
     fi
 
     sync_pull
+    if ! validate_state_contract "$repo" 2>>logs/orchestrator.log; then
+        log_line "aborting: state-file headings no longer match the canonical contract"
+        exit 1
+    fi
 
     # Fail fast on a dead network. The incident mode this guards against:
     # the firewall/network bridge dies, `claude -p` then spins ~27 minutes in

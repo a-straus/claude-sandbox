@@ -24,8 +24,13 @@ while IFS= read -r b; do
     found=1
     wt="$(worktree_path "$root" "$b")"
     commits=$(git -C "$root" rev-list --count "$base..$b" 2>/dev/null || echo "?")
+    resumes="$(worker_resume_count "$root" "$b")"
     if [[ -f "$wt/.worker-done" ]]; then
-        ec="$(head -1 "$wt/.worker-done" | tr -dc '0-9')"
+        if ! ec="$(worker_exit_code "$wt/.worker-done")"; then
+            echo "  $b — FAILED/UNKNOWN (corrupt completion marker, $commits commits, $resumes resumes) →" \
+                 "inspect logs; spawn --resume $b to retry, or abandon"
+            continue
+        fi
         if branch_blocked "$root" "$b"; then
             if git -C "$root" show "$b:BLOCKED.md" 2>/dev/null | head -1 \
                     | grep -qi 'model-change'; then
@@ -33,12 +38,12 @@ while IFS= read -r b; do
                      "schema gate: drain workers, decide, update ARCHITECTURE.md," \
                      "apply alone (see CLAUDE.md). Read: git show $b:BLOCKED.md"
             else
-                echo "  $b — BLOCKED ($commits commits) → read: git show $b:BLOCKED.md ;" \
-                     "resolve or escalate, then re-spawn or abandon"
+                echo "  $b — BLOCKED ($commits commits, $resumes resumes) → read: git show $b:BLOCKED.md ;" \
+                     "resolve or escalate, then spawn --resume or abandon"
             fi
         elif [[ -n "$ec" && "$ec" != "0" ]]; then
-            echo "  $b — FAILED (worker exit $ec, $commits commits) → check latest" \
-                 "logs/$b.*.jsonl ; re-spawn to resume or abandon"
+            echo "  $b — FAILED (worker exit $ec, $commits commits, $resumes resumes) → check latest" \
+                 "logs/$b.*.jsonl ; spawn --resume to retry or abandon"
         else
             echo "  $b — FINISHED ($commits commits) → integrate $b"
         fi

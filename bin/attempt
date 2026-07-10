@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
-# attempt — run a command as a supervised "activity attempt": watchdog + bounded
-# transient retries + an append-only JSONL journal. Lean by design (Fable review):
+# attempt — EXPERIMENTAL standalone supervisor, not wired into orchestrate/spawn.
+# Run a command as a supervised "activity attempt": watchdog + bounded
+# transient retries + an append-only JSONL journal. Presence of this file does
+# not mean loop calls are supervised. Lean by design (Fable review):
 # no SQLite, no scheduler, no worktree reset. One process-group-killed watchdog
 # around each call is what turns the known failures into fast retries:
 #   * dead network bridge -> 27-min hang        => no-output watchdog kills at 180s
@@ -18,7 +20,9 @@
 #   --kind <s>              free label (orchestrator|worker|...) for the journal
 #   --deadline-seconds N    hard wall deadline per attempt   (default 900)
 #   --no-output-seconds N   kill if no output for N seconds  (default 180)
-#   --max-attempts N        total attempts incl. the first   (default 4)
+#   --retry-safe            caller asserts rerunning cannot duplicate effects
+#   --max-attempts N        total attempts incl. the first   (default 1, or 4
+#                           with --retry-safe)
 #   --state-dir DIR         where the JSONL journal lives     (default below)
 #   --worktree PATH         recorded in the journal (context only)
 #   --branch NAME           recorded in the journal (context only)
@@ -41,7 +45,7 @@ die() { echo "attempt: $*" >&2; exit 2; }
 shift
 
 RUN_ID="" STEP_ID="" KIND="generic"
-DEADLINE=900 NO_OUTPUT=180 MAX_ATTEMPTS=4
+DEADLINE=900 NO_OUTPUT=180 MAX_ATTEMPTS="" RETRY_SAFE=0
 WORKTREE="" BRANCH=""
 STATE_DIR="${ORCH_RUNTIME:-$HOME/.orchestrator-loop/runtime}"
 CMD=()
@@ -53,6 +57,7 @@ while [ $# -gt 0 ]; do
     --kind)            KIND="${2:-}"; shift 2 ;;
     --deadline-seconds) DEADLINE="${2:-}"; shift 2 ;;
     --no-output-seconds) NO_OUTPUT="${2:-}"; shift 2 ;;
+    --retry-safe)       RETRY_SAFE=1; shift ;;
     --max-attempts)    MAX_ATTEMPTS="${2:-}"; shift 2 ;;
     --state-dir)       STATE_DIR="${2:-}"; shift 2 ;;
     --worktree)        WORKTREE="${2:-}"; shift 2 ;;
@@ -65,14 +70,20 @@ done
 [ -n "$RUN_ID" ]  || die "--run-id is required"
 [ -n "$STEP_ID" ] || die "--step-id is required"
 [ "${#CMD[@]}" -gt 0 ] || die "no command given after --"
+if [ -z "$MAX_ATTEMPTS" ]; then
+  if [ "$RETRY_SAFE" -eq 1 ]; then MAX_ATTEMPTS=4; else MAX_ATTEMPTS=1; fi
+fi
 for n in "$DEADLINE" "$NO_OUTPUT" "$MAX_ATTEMPTS"; do
   case "$n" in ''|*[!0-9]*) die "numeric option got non-numeric '$n'" ;; esac
 done
+[ "$MAX_ATTEMPTS" -le 1 ] || [ "$RETRY_SAFE" -eq 1 ] \
+  || die "--max-attempts >1 requires --retry-safe; stable IDs alone do not make state-mutating commands idempotent"
 
 mkdir -p "$STATE_DIR/logs" || die "cannot create state dir $STATE_DIR"
 JOURNAL="$STATE_DIR/attempts.jsonl"
 # filesystem-safe slug for log filenames
-SLUG="$(printf '%s' "$STEP_ID" | tr -c 'A-Za-z0-9._-' '_')"
+SLUG="$(printf '%s_%s' "$RUN_ID" "$STEP_ID" | tr -c 'A-Za-z0-9._-' '_')"
+INVOCATION="$(date -u +%Y%m%dT%H%M%SZ).$$"
 
 # ---- json helper (values only; no external jq dependency) ------------------
 jesc() { printf '%s' "$1" | python3 -c 'import json,sys; sys.stdout.write(json.dumps(sys.stdin.read()))'; }
@@ -140,7 +151,7 @@ run_once() { # run_once <logfile>  -> returns command exit (or 124 on watchdog k
 # ---- retry loop -------------------------------------------------------------
 attempt=1
 while :; do
-  LOG="$STATE_DIR/logs/${SLUG}.${attempt}.log"
+  LOG="$STATE_DIR/logs/${SLUG}.${INVOCATION}.${attempt}.log"
   KILLED_REASON=""
   t0=$(date +%s)
   journal attempt_started "$attempt" "null" "pending" "0" "" "$LOG"
