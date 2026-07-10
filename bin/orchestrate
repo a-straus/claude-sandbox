@@ -44,6 +44,11 @@
 #   NET_RETRY_MAX=10            consecutive failed API reachability probes before
 #                               aborting (each probe failure: firewall refresh +
 #                               backoff, without charging the iteration budget)
+#   RATE_LIMIT_SLEEP=300        wait between retries when the orchestrator's own
+#                               claude -p call returns a 429 session/rate limit
+#                               (a transient limit that resets on a schedule)
+#   MAX_RATE_LIMIT_WAITS=48     give up (abort) after this many consecutive 429
+#                               waits — ~4h at the default sleep; re-run later
 #   WORKTREE_ROOT=~/worktrees   where worker worktrees live (outside /workspace)
 #
 # While running:
@@ -58,10 +63,24 @@ fg=0
 if [[ "${1:-}" == "--fg" ]]; then fg=1; shift; fi
 repo="${1:-$PWD}"
 repo="$(cd "$repo" && pwd)"
-# Per-project tmux session names so several projects can run on this machine
-# at once (workers land in the matching agents session via _lib.sh).
-orch_session="orchestrator-$(basename "$repo")"
-agents_session_name="agents-$(basename "$repo")"
+# Include a stable hash of the absolute repo path so two projects with the
+# same basename cannot collide in tmux or under WORKTREE_ROOT.
+project_key="$(project_id "$repo")"
+orch_session="orchestrator-$project_key"
+agents_session_name="agents-$project_key"
+legacy_orch_session="orchestrator-$(basename "$repo")"
+legacy_agents_session="agents-$(basename "$repo")"
+if command -v tmux >/dev/null 2>&1; then
+    if ! tmux has-session -t "$orch_session" 2>/dev/null \
+            && tmux has-session -t "$legacy_orch_session" 2>/dev/null; then
+        orch_session="$legacy_orch_session"
+        echo "NOTE: adopting legacy tmux session '$legacy_orch_session'; new runs use '$project_key'." >&2
+    fi
+    if ! tmux has-session -t "$agents_session_name" 2>/dev/null \
+            && tmux has-session -t "$legacy_agents_session" 2>/dev/null; then
+        agents_session_name="$legacy_agents_session"
+    fi
+fi
 sandbox="$(cd "$(dirname "$0")/.." && pwd)"
 self="$(cd "$(dirname "$0")" && pwd)/orchestrate"
 
@@ -83,8 +102,25 @@ SLEEP_MAX="${SLEEP_MAX:-270}"
 FIREWALL_EVERY="${FIREWALL_EVERY:-10}"
 NET_RETRY_MAX="${NET_RETRY_MAX:-10}"
 MAX_CONSECUTIVE_ERRORS="${MAX_CONSECUTIVE_ERRORS:-3}"
+RATE_LIMIT_SLEEP="${RATE_LIMIT_SLEEP:-300}"
+MAX_RATE_LIMIT_WAITS="${MAX_RATE_LIMIT_WAITS:-48}"
+MAX_WORKER_RESUMES="${MAX_WORKER_RESUMES:-2}"
+
+for setting in MAX_ITERATIONS MAX_WORKERS MAX_WORKER_TURNS WORKER_TIMEOUT_SECS \
+        ITERATION_TIMEOUT_SECS ORCH_MAX_TURNS SLEEP_MAX NET_RETRY_MAX \
+        MAX_CONSECUTIVE_ERRORS MAX_RATE_LIMIT_WAITS; do
+    value="${!setting}"
+    [[ "$value" =~ ^[1-9][0-9]*$ ]] || die "$setting must be a positive integer (got '$value')"
+done
+for setting in SLEEP_SECONDS RATE_LIMIT_SLEEP MAX_WORKER_RESUMES; do
+    value="${!setting}"
+    [[ "$value" =~ ^[0-9]+$ ]] || die "$setting must be a non-negative integer (got '$value')"
+done
+[[ "$FIREWALL_EVERY" =~ ^[0-9]+$ ]] || die "FIREWALL_EVERY must be a non-negative integer"
+[[ "$MAX_COST_USD" =~ ^([0-9]+([.][0-9]*)?|[.][0-9]+)$ ]] || die "MAX_COST_USD must be a non-negative number"
+[[ "$ORCH_SYNC" == 0 || "$ORCH_SYNC" == 1 ]] || die "ORCH_SYNC must be 0 or 1"
 export MAX_WORKERS MAX_WORKER_TURNS WORKER_TIMEOUT_SECS WORKTREE_ROOT \
-       ORCH_MODEL WORKER_MODEL WORKER_EFFORT
+       MAX_WORKER_RESUMES ORCH_MODEL WORKER_MODEL WORKER_EFFORT
 
 # ── Preflight ─────────────────────────────────────────────────────────────────
 
@@ -105,20 +141,11 @@ if [[ ! -d "$repo/design" && -d "$sandbox/design" ]]; then
 fi
 
 [[ -f "$repo/GOAL.md" ]] || die "no GOAL.md in $repo and no template to copy"
+validate_state_contract "$repo" || die "state-file headings are malformed; restore the canonical templates before running"
 
-# Refuse to start on an unfilled GOAL.md — vague goals make generic products.
-unfilled=()
-grep -q '^- \*\*One-line vision:\*\*$'  "$repo/GOAL.md" && unfilled+=("§3 one-line vision")
-grep -q '^- \*\*\[Must\]\*\*$'          "$repo/GOAL.md" && unfilled+=("§5 user stories")
-grep -q '^- \*\*Stack / languages / frameworks:\*\* \*(Mandated' "$repo/GOAL.md" \
-                                                      && unfilled+=("§8 stack")
-grep -q '^- \*\*Acceptable:\*\*$'       "$repo/GOAL.md" && unfilled+=("§12 quality bar")
-if (( ${#unfilled[@]} > 0 )); then
-    echo "ERROR: GOAL.md still has unfilled ★ sections:" >&2
-    printf '  - %s\n' "${unfilled[@]}" >&2
-    echo "Complete them before starting — each section has inline guidance." >&2
-    exit 1
-fi
+# Refuse every unresolved placeholder in every ★ autonomy-critical section.
+validate_goal_contract "$repo/GOAL.md" \
+    || die "GOAL.md has incomplete ★ sections; replace each reported template field with explicit policy"
 
 # Git identity — fail now, not three hours in at the first worker commit.
 if ! git -C "$repo" var GIT_AUTHOR_IDENT >/dev/null 2>&1; then
@@ -183,9 +210,12 @@ fi
 # (Humans: chmod u+w GOAL.md to edit locally, or edit via GitHub with ORCH_SYNC.)
 chmod 444 "$repo/GOAL.md" 2>/dev/null || true
 
-if [[ -n "$(git -C "$repo" status --porcelain)" ]]; then
-    echo "WARNING: the repo has uncommitted changes; workers branch from HEAD" >&2
-    echo "and will not see them." >&2
+dirty="$(non_state_dirty "$repo")"
+if [[ -n "$dirty" ]]; then
+    echo "ERROR: repo has uncommitted source changes outside orchestrator state files:" >&2
+    printf '%s\n' "$dirty" | sed 's/^/  /' >&2
+    echo "Commit, stash, or remove them before autonomous execution." >&2
+    exit 1
 fi
 
 # ── Re-launch into tmux unless asked to run in the foreground ────────────────
@@ -201,12 +231,13 @@ if (( ! fg )) && command -v tmux >/dev/null 2>&1; then
         WORKER_EFFORT="$WORKER_EFFORT" \
         ORCH_SYNC="$ORCH_SYNC" \
         MAX_WORKERS="$MAX_WORKERS" MAX_WORKER_TURNS="$MAX_WORKER_TURNS" \
-        WORKER_TIMEOUT_SECS="$WORKER_TIMEOUT_SECS" \
+        WORKER_TIMEOUT_SECS="$WORKER_TIMEOUT_SECS" MAX_WORKER_RESUMES="$MAX_WORKER_RESUMES" \
         ITERATION_TIMEOUT_SECS="$ITERATION_TIMEOUT_SECS" \
         ORCH_MAX_TURNS="$ORCH_MAX_TURNS" SLEEP_SECONDS="$SLEEP_SECONDS" \
         SLEEP_MAX="$SLEEP_MAX" FIREWALL_EVERY="$FIREWALL_EVERY" \
         NET_RETRY_MAX="$NET_RETRY_MAX" \
         MAX_CONSECUTIVE_ERRORS="$MAX_CONSECUTIVE_ERRORS" \
+        RATE_LIMIT_SLEEP="$RATE_LIMIT_SLEEP" MAX_RATE_LIMIT_WAITS="$MAX_RATE_LIMIT_WAITS" \
         WORKTREE_ROOT="$WORKTREE_ROOT" \
         bash "$self" --fg "$repo")"
     tmux new-session -d -s "$orch_session" -n loop -c "$repo" "$cmd"
@@ -258,14 +289,15 @@ iter=$iter_base
 total_cost=0
 errors=0
 net_fails=0
+rl_waits=0
 sleep_s="$SLEEP_SECONDS"
 
 backlog_count() {
-    awk '/^## Backlog/{f=1; next} /^## /{f=0} f && /^- /' TASKS.md 2>/dev/null | wc -l | tr -d ' '
+    section_item_count TASKS.md '## Backlog'
 }
 
 inbox_count() {
-    awk '/^## Inbox/{f=1; next} /^## /{f=0} f && /^- /' FEEDBACK.md 2>/dev/null | wc -l | tr -d ' '
+    section_item_count FEEDBACK.md '## Inbox'
 }
 
 log_line() {
@@ -337,6 +369,10 @@ while :; do
     fi
 
     sync_pull
+    if ! validate_state_contract "$repo" 2>>logs/orchestrator.log; then
+        log_line "aborting: state-file headings no longer match the canonical contract"
+        exit 1
+    fi
 
     # Fail fast on a dead network. The incident mode this guards against:
     # the firewall/network bridge dies, `claude -p` then spins ~27 minutes in
@@ -422,11 +458,30 @@ while :; do
     result="$(jq -r '.result // empty' "$out_json" 2>/dev/null)" || result=""
     in_tok="$(jq -r '.usage.input_tokens // 0' "$out_json" 2>/dev/null)" || in_tok="?"
     out_tok="$(jq -r '.usage.output_tokens // 0' "$out_json" 2>/dev/null)" || out_tok="?"
+    api_err="$(jq -r '.api_error_status // empty' "$out_json" 2>/dev/null)" || api_err=""
 
     guard_goal
     state_commit
 
     if (( rc != 0 )) || [[ "$is_error" == "true" || -z "$cost" ]]; then
+        # A session/rate limit (HTTP 429) is transient, not a code fault: the
+        # call returns in <1s at $0, so three back-to-back 429s would otherwise
+        # trip the consecutive-error abort in about a minute. Wait for the reset
+        # window instead — don't consume the budget slot or count it as a
+        # failure. A hard cap (MAX_RATE_LIMIT_WAITS) still bounds the wait so a
+        # multi-hour account cap eventually aborts for the human to re-run.
+        if [[ "$api_err" == "429" ]] || [[ "$result" == *"session limit"* ]] \
+                || [[ "$result" == *"usage limit"* ]] || [[ "$result" == *"rate limit"* ]]; then
+            iter=$((iter - 1))            # nothing ran; don't consume the budget slot
+            rl_waits=$((rl_waits + 1))
+            if (( rl_waits > MAX_RATE_LIMIT_WAITS )); then
+                log_line "aborting: still rate-limited after $rl_waits waits (~$(( rl_waits * RATE_LIMIT_SLEEP / 60 )) min) — re-run later. Last: ${result:-HTTP 429}"
+                exit 1
+            fi
+            log_line "rate/session limit (${result:-HTTP 429}) — waiting ${RATE_LIMIT_SLEEP}s for reset (wait $rl_waits/$MAX_RATE_LIMIT_WAITS), not counting as a failure"
+            sleep "$RATE_LIMIT_SLEEP"
+            continue
+        fi
         errors=$((errors + 1))
         log_line "iteration $iter FAILED (exit $rc, error #$errors/$MAX_CONSECUTIVE_ERRORS) — see $err_log"
         tail -5 "$err_log" 2>/dev/null || true
@@ -441,6 +496,7 @@ while :; do
         continue
     fi
     errors=0
+    rl_waits=0
 
     total_cost="$(awk -v a="$total_cost" -v b="$cost" 'BEGIN{printf "%.4f", a + b}')"
     log_line "iteration $iter done — \$$cost ($turns turns, $in_tok in / $out_tok out tokens, session $session)"

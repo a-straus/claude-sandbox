@@ -25,8 +25,36 @@ valid_branch() {
     [[ "$1" =~ ^[a-z0-9][a-z0-9._-]*$ ]] && [[ "$1" != *..* ]] && [[ "$1" != *.lock ]]
 }
 
+project_id() {      # project_id <root> → readable name + stable path hash
+    local root name hash
+    root="$(cd "$1" 2>/dev/null && pwd -P)" || return 1
+    name="$(basename "$root")"
+    if command -v shasum >/dev/null 2>&1; then
+        hash="$(printf '%s' "$root" | shasum -a 256 | awk '{print substr($1,1,10)}')"
+    else
+        hash="$(printf '%s' "$root" | cksum | awk '{print $1}')"
+    fi
+    printf '%s-%s\n' "$name" "$hash"
+}
+
 worktree_path() {   # worktree_path <root> <branch>
-    echo "$WORKTREE_ROOT/$(basename "$1")--$2"
+    local hashed legacy root_common legacy_common
+    hashed="$WORKTREE_ROOT/$(project_id "$1")--$2"
+    legacy="$WORKTREE_ROOT/$(basename "$1")--$2"
+    if [[ -e "$hashed/.git" || ! -e "$legacy/.git" ]]; then
+        echo "$hashed"
+        return
+    fi
+    # Upgrade compatibility: adopt an already-registered basename-only
+    # worktree only when it provably belongs to this repository. New worktrees
+    # always use the collision-resistant path.
+    root_common="$(git -C "$1" rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)"
+    legacy_common="$(git -C "$legacy" rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)"
+    if [[ -n "$root_common" && "$legacy_common" == "$root_common" ]]; then
+        echo "$legacy"
+    else
+        echo "$hashed"
+    fi
 }
 
 # All local branches except the base branch.
@@ -41,7 +69,17 @@ worker_branches() { # worker_branches <root>
 # Session names carry the project (main repo directory) name so several
 # projects can run their own orchestrator + workers on this machine at once.
 agents_session() {  # agents_session → e.g. agents-myproject
-    echo "agents-$(basename "$(repo_root)")"
+    local root hashed legacy
+    root="$(repo_root)"
+    hashed="agents-$(project_id "$root")"
+    legacy="agents-$(basename "$root")"
+    if command -v tmux >/dev/null 2>&1 \
+            && ! tmux has-session -t "$hashed" 2>/dev/null \
+            && tmux has-session -t "$legacy" 2>/dev/null; then
+        echo "$legacy"
+    else
+        echo "$hashed"
+    fi
 }
 
 window_id() {       # window_id <name> → @id or empty
@@ -68,6 +106,22 @@ kill_branch_windows() { # kill_branch_windows <branch>
 # signal, so it survives container/tmux restarts.
 worker_done_file() {    # worker_done_file <root> <branch>
     echo "$(worktree_path "$1" "$2")/.worker-done"
+}
+
+worker_exit_code() {    # worker_exit_code <marker> → exact non-negative integer
+    local value
+    [[ -f "$1" ]] || return 1
+    IFS= read -r value < "$1" || true
+    [[ "$value" =~ ^[0-9]+$ ]] || return 1
+    printf '%s\n' "$value"
+}
+
+worker_resume_count() { # worker_resume_count <root> <branch>
+    local wt
+    wt="$(worktree_path "$1" "$2")"
+    [[ -d "$wt" ]] || { echo 0; return; }
+    find "$wt" -maxdepth 1 -type f -name '.worker-done.previous.*' 2>/dev/null \
+        | wc -l | tr -d ' '
 }
 
 branch_blocked() {  # branch committed a BLOCKED.md?
@@ -151,16 +205,141 @@ pending_answer_stats() { # pending_answer_stats <questions-file> → "<total> <a
     ' "$1"
 }
 
-# timeout(1) exists in the container (coreutils) but not on stock macOS;
-# degrade to no timeout rather than failing. -k: SIGKILL 30s after the TERM
-# if the command ignores it — a hung claude must never outlive its budget.
+section_item_count() {   # section_item_count <file> <exact ## heading>
+    [[ -f "$1" ]] || { echo 0; return 1; }
+    awk -v s="$2" '$0==s{f=1;next} /^##[[:space:]]/{f=0} f&&/^- /{n++} END{print n+0}' "$1"
+}
+
+validate_state_contract() { # validate_state_contract <root>
+    local spec file heading count failed=0
+    for spec in \
+        'TASKS.md|## In Progress' 'TASKS.md|## Backlog' \
+        'TASKS.md|## Done' 'TASKS.md|## Blocked' \
+        'QUESTIONS.md|## Pending' 'QUESTIONS.md|## Answered' \
+        'FEEDBACK.md|## Inbox' 'FEEDBACK.md|## Processed'; do
+        file="${spec%%|*}"; heading="${spec#*|}"
+        if [[ ! -f "$1/$file" ]]; then
+            echo "state contract: missing $file" >&2
+            failed=1
+            continue
+        fi
+        count="$(grep -cFx -- "$heading" "$1/$file" 2>/dev/null || true)"
+        if [[ "$count" != "1" ]]; then
+            echo "state contract: $file must contain exactly one '$heading' (found $count)" >&2
+            failed=1
+        fi
+    done
+    return "$failed"
+}
+
+validate_goal_contract() {  # validate_goal_contract <GOAL.md>
+    local heading count failed=0
+    for heading in \
+        '### ★ 3 · Vision, Goals & Non-Goals' \
+        '### ★ 5 · User Stories & Acceptance Criteria' \
+        '### ★ 6 · Functional Requirements' \
+        '### ★ 8 · Technical Context & Constraints' \
+        '### ★ 11 · Decision & Tradeoff Rules' \
+        '### ★ 12 · Quality Bar' \
+        '### ★ 13 · Escalation & Autonomy Boundaries' \
+        '### ★ 15 · Definition of Done' \
+        '### ★ 17 · Assumptions & Open Questions'; do
+        count="$(grep -cFx -- "$heading" "$1" 2>/dev/null || true)"
+        if [[ "$count" != "1" ]]; then
+            echo "GOAL contract: expected exactly one '$heading' (found $count)" >&2
+            failed=1
+        fi
+    done
+
+    # Starred sections are executable autonomy policy. Reject unchanged
+    # template prompts and empty list slots instead of letting them masquerade
+    # as a filled specification.
+    if ! awk '
+        /^### ★ / { active=1; section=$0; next }
+        active && (/^### / || /^## / || /^---$/) { active=0 }
+        !active { next }
+        /<!--/ { comment=1 }
+        comment { if (/-->/) comment=0; next }
+        /^- \*\*(One-line vision|Acceptable|Good):\*\*[[:space:]]*$/ ||
+        /^[[:space:]]*-[[:space:]]*$/ ||
+        /^[[:space:]]*- \[[[:space:]]*\][[:space:]]*$/ ||
+        /^- \*\*\[(Must|Should|Could)\]\*\*[[:space:]]*$/ ||
+        /\*\(Mandated, preferred, or "agent.s choice/ ||
+        /\*\(Anything that must — or must not — be used/ ||
+        /\*\(UI products: optionally fill the design\// ||
+        /\*\(Core objects and their relationships/ ||
+        /\*\(APIs, services, auth model/ ||
+        /\*\(Budget, infra, latency, data residency/ ||
+        /\*\(How to sequence when everything seems important/ ||
+        /\*\(Move fast on reversible; pause on one-way doors/ ||
+        /\*\(Tests — what kind and coverage/ ||
+        /\*\(All of the above, plus:/ ||
+        /^#### Feature area [0-9]+:[[:space:]]*$/ {
+            printf "GOAL contract: unresolved placeholder in %s (line %d): %s\n", section, NR, $0 > "/dev/stderr"
+            bad=1
+        }
+        END { exit bad }
+    ' "$1"; then
+        failed=1
+    fi
+    return "$failed"
+}
+
+# GNU timeout is used when present; stock macOS gets the process-group watchdog
+# below. Either way, a hung child cannot silently outlive its deadline.
 run_with_timeout() {    # run_with_timeout <secs> <cmd...>
-    local secs="$1"; shift
+    local secs="$1" pid timer rc marker
+    shift
     if command -v timeout >/dev/null 2>&1; then
         timeout -k 30 "$secs" "$@"
-    else
-        "$@"
+        return
     fi
+
+    # macOS does not ship GNU timeout. Job control puts the child in its own
+    # process group so TERM/KILL reach descendants too (for example check.sh
+    # spawning a test runner). A marker distinguishes our deadline from a
+    # command that independently exits 143.
+    marker="$(mktemp "${TMPDIR:-/tmp}/orch-timeout.XXXXXX")" || return 1
+    rm -f "$marker"
+    set -m
+    "$@" &
+    pid=$!
+    set +m
+    (
+        sleep "$secs"
+        if kill -0 "$pid" 2>/dev/null; then
+            : > "$marker"
+            kill -TERM -- "-$pid" 2>/dev/null || kill -TERM "$pid" 2>/dev/null || true
+            sleep 30
+            kill -KILL -- "-$pid" 2>/dev/null || kill -KILL "$pid" 2>/dev/null || true
+        fi
+    ) &
+    timer=$!
+
+    if wait "$pid"; then rc=0; else rc=$?; fi
+    kill "$timer" 2>/dev/null || true
+    wait "$timer" 2>/dev/null || true
+    if [[ -f "$marker" ]]; then rc=124; fi
+    rm -f "$marker"
+    return "$rc"
+}
+
+# Print dirt outside the semantic state files that the orchestrator owns.
+# Inbox/state edits may arrive while a run is live; source-code dirt must stop
+# autonomous branching/integration because it cannot be merged safely.
+non_state_dirty() {     # non_state_dirty <root>
+    local path
+    {
+        git -C "$1" diff --name-only
+        git -C "$1" diff --cached --name-only
+        git -C "$1" ls-files --others --exclude-standard
+    } 2>/dev/null | sort -u | while IFS= read -r path; do
+        case "$path" in
+            GOAL.md|TASKS.md|QUESTIONS.md|DECISIONS.md|ARCHITECTURE.md|FEEDBACK.md|REVIEW.md|CRITIQUE.md|design/*) ;;
+            '') ;;
+            *) printf '%s\n' "$path" ;;
+        esac
+    done
 }
 
 # True when the Anthropic API answers at the TCP/TLS level within seconds.

@@ -1,0 +1,182 @@
+#!/usr/bin/env bash
+# attempt — EXPERIMENTAL standalone supervisor, not wired into orchestrate/spawn.
+# Run a command as a supervised "activity attempt": watchdog + bounded
+# transient retries + an append-only JSONL journal. Presence of this file does
+# not mean loop calls are supervised. Lean by design (Fable review):
+# no SQLite, no scheduler, no worktree reset. One process-group-killed watchdog
+# around each call is what turns the known failures into fast retries:
+#   * dead network bridge -> 27-min hang        => no-output watchdog kills at 180s
+#   * inconsistent 429 handling                 => classified TRANSIENT, retried
+#
+# Usage:
+#   attempt run --run-id <id> --step-id <id> [opts] -- <command> [args...]
+#
+# Required:
+#   --run-id   <id>     stable id for this whole orchestrator run
+#   --step-id  <id>     stable id for this step (e.g. orchestrator/<iter>,
+#                       worker/<task>/<generation>). NEVER derive from prompt
+#                       text / timestamp / PID / branch HEAD — the caller owns it.
+# Options:
+#   --kind <s>              free label (orchestrator|worker|...) for the journal
+#   --deadline-seconds N    hard wall deadline per attempt   (default 900)
+#   --no-output-seconds N   kill if no output for N seconds  (default 180)
+#   --retry-safe            caller asserts rerunning cannot duplicate effects
+#   --max-attempts N        total attempts incl. the first   (default 1, or 4
+#                           with --retry-safe)
+#   --state-dir DIR         where the JSONL journal lives     (default below)
+#   --worktree PATH         recorded in the journal (context only)
+#   --branch NAME           recorded in the journal (context only)
+#   -- <command...>         the command to supervise (everything after --)
+#
+# JOURNAL: one JSON line per attempt appended to <state-dir>/attempts.jsonl, plus
+# a per-attempt combined stdout+stderr log at <state-dir>/logs/<step>.<n>.log.
+# The state-dir defaults OUTSIDE any git worktree and is never fed to a model —
+# it is operator/scheduler metadata only (keeps model context bounded).
+#
+# EXIT: 0 if the command eventually succeeded; otherwise the last command exit
+# code (or 124 if the final attempt was watchdog-killed). Classification and all
+# diagnostics go to stderr; the command's own stdout is streamed through.
+set -uo pipefail
+
+die() { echo "attempt: $*" >&2; exit 2; }
+
+# ---- parse -----------------------------------------------------------------
+[ "${1:-}" = "run" ] || die "usage: attempt run --run-id ID --step-id ID [opts] -- cmd..."
+shift
+
+RUN_ID="" STEP_ID="" KIND="generic"
+DEADLINE=900 NO_OUTPUT=180 MAX_ATTEMPTS="" RETRY_SAFE=0
+WORKTREE="" BRANCH=""
+STATE_DIR="${ORCH_RUNTIME:-$HOME/.orchestrator-loop/runtime}"
+CMD=()
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --run-id)          RUN_ID="${2:-}"; shift 2 ;;
+    --step-id)         STEP_ID="${2:-}"; shift 2 ;;
+    --kind)            KIND="${2:-}"; shift 2 ;;
+    --deadline-seconds) DEADLINE="${2:-}"; shift 2 ;;
+    --no-output-seconds) NO_OUTPUT="${2:-}"; shift 2 ;;
+    --retry-safe)       RETRY_SAFE=1; shift ;;
+    --max-attempts)    MAX_ATTEMPTS="${2:-}"; shift 2 ;;
+    --state-dir)       STATE_DIR="${2:-}"; shift 2 ;;
+    --worktree)        WORKTREE="${2:-}"; shift 2 ;;
+    --branch)          BRANCH="${2:-}"; shift 2 ;;
+    --)                shift; CMD=("$@"); break ;;
+    *)                 die "unknown arg: $1" ;;
+  esac
+done
+
+[ -n "$RUN_ID" ]  || die "--run-id is required"
+[ -n "$STEP_ID" ] || die "--step-id is required"
+[ "${#CMD[@]}" -gt 0 ] || die "no command given after --"
+if [ -z "$MAX_ATTEMPTS" ]; then
+  if [ "$RETRY_SAFE" -eq 1 ]; then MAX_ATTEMPTS=4; else MAX_ATTEMPTS=1; fi
+fi
+for n in "$DEADLINE" "$NO_OUTPUT" "$MAX_ATTEMPTS"; do
+  case "$n" in ''|*[!0-9]*) die "numeric option got non-numeric '$n'" ;; esac
+done
+[ "$MAX_ATTEMPTS" -le 1 ] || [ "$RETRY_SAFE" -eq 1 ] \
+  || die "--max-attempts >1 requires --retry-safe; stable IDs alone do not make state-mutating commands idempotent"
+
+mkdir -p "$STATE_DIR/logs" || die "cannot create state dir $STATE_DIR"
+JOURNAL="$STATE_DIR/attempts.jsonl"
+# filesystem-safe slug for log filenames
+SLUG="$(printf '%s_%s' "$RUN_ID" "$STEP_ID" | tr -c 'A-Za-z0-9._-' '_')"
+INVOCATION="$(date -u +%Y%m%dT%H%M%SZ).$$"
+
+# ---- json helper (values only; no external jq dependency) ------------------
+jesc() { printf '%s' "$1" | python3 -c 'import json,sys; sys.stdout.write(json.dumps(sys.stdin.read()))'; }
+
+journal() { # journal <event> <attempt> <exit> <class> <dur> <reason> <logfile>
+  local ev="$1" att="$2" ex="$3" cl="$4" dur="$5" reason="$6" log="$7"
+  local ts; ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  printf '{"ts":%s,"run_id":%s,"step_id":%s,"kind":%s,"event":%s,"attempt":%s,"exit_code":%s,"class":%s,"duration_s":%s,"reason":%s,"branch":%s,"worktree":%s,"log":%s}\n' \
+    "$(jesc "$ts")" "$(jesc "$RUN_ID")" "$(jesc "$STEP_ID")" "$(jesc "$KIND")" \
+    "$(jesc "$ev")" "$att" "$ex" "$(jesc "$cl")" "$dur" "$(jesc "$reason")" \
+    "$(jesc "$BRANCH")" "$(jesc "$WORKTREE")" "$(jesc "$log")" >>"$JOURNAL"
+}
+
+# ---- classification ---------------------------------------------------------
+# TRANSIENT => safe to retry; anything else (incl. unrecognized nonzero) PERMANENT.
+classify() { # classify <exit> <logfile> -> echoes transient|permanent
+  local ex="$1" log="$2"
+  case "$ex" in
+    124|137|143) echo transient; return ;;   # our watchdog TERM/KILL / timeout
+    0) echo ok; return ;;
+  esac
+  if [ -r "$log" ] && tail -c 65536 "$log" 2>/dev/null | grep -qiE \
+     'rate.?limit|(^|[^0-9])(408|429|500|502|503|504|529)([^0-9]|$)|connection (reset|refused)|network bridge|temporarily unavailable|timed? out|dns|tls handshake|econnreset|eof (while|occurred)|socket hang'; then
+    echo transient; return
+  fi
+  echo permanent
+}
+
+# full-jitter backoff: base doubles 15,30,60,120,... sleep = rand[0,base]
+backoff() { # backoff <attempt-number-1based>
+  local i="$1" base=15 j
+  base=$(( 15 * (1 << (i-1)) )); [ "$base" -gt 300 ] && base=300
+  j=$(( RANDOM % (base + 1) )); echo "$j"
+}
+
+# ---- supervised single run with dual watchdog ------------------------------
+run_once() { # run_once <logfile>  -> returns command exit (or 124 on watchdog kill)
+  local log="$1"; : >"$log"
+  set -m
+  ( "${CMD[@]}" ) >"$log" 2>&1 &
+  local pid=$! start now last_size cur_size last_active killed=""
+  start=$(date +%s); last_active=$start; last_size=0
+
+  while kill -0 "$pid" 2>/dev/null; do
+    sleep 2
+    now=$(date +%s)
+    cur_size=$(wc -c <"$log" 2>/dev/null | tr -d ' '); cur_size=${cur_size:-0}
+    [ "$cur_size" != "$last_size" ] && { last_active=$now; last_size=$cur_size; }
+    if [ $(( now - start )) -ge "$DEADLINE" ]; then killed="deadline_${DEADLINE}s"; fi
+    if [ $(( now - last_active )) -ge "$NO_OUTPUT" ]; then killed="no_output_${NO_OUTPUT}s"; fi
+    if [ -n "$killed" ]; then
+      kill -TERM -"$pid" 2>/dev/null
+      for _ in 1 2 3 4 5 6 7 8 9 10; do kill -0 "$pid" 2>/dev/null || break; sleep 1; done
+      kill -KILL -"$pid" 2>/dev/null
+      wait "$pid" 2>/dev/null
+      cat "$log"
+      KILLED_REASON="$killed"; return 124
+    fi
+  done
+  wait "$pid"; local rc=$?
+  cat "$log"
+  KILLED_REASON=""; return "$rc"
+}
+
+# ---- retry loop -------------------------------------------------------------
+attempt=1
+while :; do
+  LOG="$STATE_DIR/logs/${SLUG}.${INVOCATION}.${attempt}.log"
+  KILLED_REASON=""
+  t0=$(date +%s)
+  journal attempt_started "$attempt" "null" "pending" "0" "" "$LOG"
+  run_once "$LOG"; rc=$?
+  dur=$(( $(date +%s) - t0 ))
+  cls="$(classify "$rc" "$LOG")"
+  reason="$KILLED_REASON"
+
+  if [ "$cls" = "ok" ]; then
+    journal attempt_completed "$attempt" "$rc" "ok" "$dur" "$reason" "$LOG"
+    exit 0
+  fi
+
+  if [ "$cls" = "transient" ] && [ "$attempt" -lt "$MAX_ATTEMPTS" ]; then
+    wait_s="$(backoff "$attempt")"
+    journal attempt_failed "$attempt" "$rc" "transient" "$dur" "$reason" "$LOG"
+    journal retry_scheduled "$attempt" "$rc" "transient" "0" "backoff_${wait_s}s" "$LOG"
+    echo "attempt: step=$STEP_ID attempt=$attempt transient ($reason rc=$rc) — retry in ${wait_s}s" >&2
+    sleep "$wait_s"
+    attempt=$(( attempt + 1 ))
+    continue
+  fi
+
+  # permanent, or transient with attempts exhausted
+  journal attempt_failed "$attempt" "$rc" "$cls" "$dur" "$reason" "$LOG"
+  echo "attempt: step=$STEP_ID FAILED after $attempt attempt(s) — class=$cls rc=$rc reason=$reason" >&2
+  exit "$rc"
+done

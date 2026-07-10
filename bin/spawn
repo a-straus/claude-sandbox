@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# spawn [--model <model>] [--effort <level>] [--include <path>]... \
+# spawn [--resume] [--model <model>] [--effort <level>] [--include <path>]... \
 #       <branch> "<task>" [base-ref]
 # Launch a headless worker agent on its own branch + worktree.
 #
@@ -14,9 +14,10 @@
 # <worktree>/.worker-done — that marker, not tmux state, is the completion
 # signal. The full event stream is logged to <repo>/logs/<branch>.<ts>.jsonl.
 #
-# Re-running spawn for an existing branch (after a crash, container restart,
-# failed check, or resolved blocker) relaunches a worker in the same worktree
-# to resume from the prior commits.
+# Re-running spawn for a stale existing branch relaunches its worker. A branch
+# with a completion marker requires --resume, which archives that marker before
+# launch. This makes retry after BLOCKED/FAILED/check-failed an explicit state
+# transition instead of an undocumented `rm .worker-done` side effect.
 #
 # Worktrees live under $WORKTREE_ROOT (default ~/worktrees), outside /workspace,
 # and get a sparse checkout that excludes the orchestrator's context: CLAUDE.md,
@@ -31,12 +32,14 @@
 set -euo pipefail
 . "$(dirname "$0")/_lib.sh"
 
-usage='usage: spawn [--model <model>] [--effort <level>] [--include <path>]... <branch> "<task>" [base-ref]'
+usage='usage: spawn [--resume] [--model <model>] [--effort <level>] [--include <path>]... <branch> "<task>" [base-ref]'
 model="${WORKER_MODEL:-}"
 effort="${WORKER_EFFORT:-}"
+resume_requested=0
 includes=()
 while [[ "${1:-}" == --* ]]; do
     case "$1" in
+        --resume)  resume_requested=1; shift ;;
         --model)   model="${2:?$usage}";  shift 2 ;;
         --effort)  effort="${2:?$usage}"; shift 2 ;;
         --include) includes+=("${2:?$usage}"); shift 2 ;;
@@ -49,6 +52,7 @@ task="${2:?$usage}"
 base="${3:-HEAD}"
 
 MAX_WORKERS="${MAX_WORKERS:-3}"
+MAX_WORKER_RESUMES="${MAX_WORKER_RESUMES:-2}"
 MAX_WORKER_TURNS="${MAX_WORKER_TURNS:-150}"
 WORKER_TIMEOUT_SECS="${WORKER_TIMEOUT_SECS:-7200}"
 
@@ -65,10 +69,23 @@ if worker_window_live "$branch"; then
     die "a worker for '$branch' is already running (tmux window '$branch')"
 fi
 
-if [[ -f "$wt/.worker-done" ]]; then
+if [[ -f "$wt/.worker-done" ]] && (( ! resume_requested )); then
     echo "ERROR: '$branch' already has a finished worker awaiting action." >&2
-    echo "Run 'integrate $branch' or 'abandon $branch' first." >&2
+    echo "Run 'integrate $branch', 'spawn --resume $branch \"<brief>\"', or 'abandon $branch'." >&2
     exit 1
+fi
+if (( resume_requested )) && [[ ! -f "$wt/.worker-done" ]]; then
+    echo "ERROR: --resume requires a finished worker marker for '$branch'." >&2
+    echo "For a crashed/stale worker with no marker, re-run spawn without --resume." >&2
+    exit 1
+fi
+if (( resume_requested )); then
+    resume_count="$(worker_resume_count "$root" "$branch")"
+    if (( resume_count >= MAX_WORKER_RESUMES )); then
+        echo "ERROR: '$branch' has exhausted its $MAX_WORKER_RESUMES mechanical resumes." >&2
+        echo "Mark the task Blocked and escalate, or abandon and re-queue it." >&2
+        exit 1
+    fi
 fi
 
 if (( $(running_workers "$root") >= MAX_WORKERS )); then
@@ -119,12 +136,12 @@ fi
 
 # Context isolation: the worker's tree carries all of the source code but
 # none of the orchestrator's context. CLAUDE.md (auto-loaded by `claude -p`
-# from the cwd), GOAL.md, the state files, and design/ are sparse-excluded
-# without git treating them as deletions (skip-worktree), so `git add -A`
-# cannot touch them. --include grants a file back: the design files a brief
-# names, or GOAL.md + design for reviewers. design/ is excluded per-file
-# because gitignore-style patterns cannot re-include a file whose parent
-# directory is excluded.
+# from the cwd), GOAL.md, the state files, design/, and guide/ (the orchestrator's
+# on-demand loop modules) are sparse-excluded without git treating them as
+# deletions (skip-worktree), so `git add -A` cannot touch them. --include grants a
+# file back: the design files a brief names, or GOAL.md + design for reviewers.
+# design/ and guide/ are excluded per-file because gitignore-style patterns cannot
+# re-include a file whose parent directory is excluded.
 included() {    # was this path (or an ancestor of it) granted via --include?
     local f="$1" inc
     for inc in ${includes[@]+"${includes[@]}"}; do
@@ -134,13 +151,13 @@ included() {    # was this path (or an ancestor of it) granted via --include?
     return 1
 }
 sparse=('/*' '!/CLAUDE.md')
-for f in GOAL.md TASKS.md QUESTIONS.md DECISIONS.md FEEDBACK.md; do
+for f in GOAL.md TASKS.md QUESTIONS.md DECISIONS.md FEEDBACK.md LOOP-EFFICIENCY-AUDIT.md; do
     included "$f" || sparse+=("!/$f")
 done
 while IFS= read -r f; do
     [[ -n "$f" ]] || continue
     included "$f" || sparse+=("!/$f")
-done < <(git -C "$wt" ls-tree -r --name-only HEAD -- design 2>/dev/null)
+done < <(git -C "$wt" ls-tree -r --name-only HEAD -- design guide 2>/dev/null)
 git -C "$wt" sparse-checkout set --no-cone "${sparse[@]}" \
     || echo "WARNING: could not sparse-exclude orchestrator context from the worker worktree" >&2
 
@@ -249,15 +266,11 @@ EOF
 ts="$(date +%Y%m%d-%H%M%S)"
 log="$root/logs/$branch.$ts.jsonl"
 
-timeout_prefix=""
-if command -v timeout >/dev/null 2>&1; then
-    timeout_prefix="timeout $WORKER_TIMEOUT_SECS "
-fi
-
 cat > "$wt/.worker-run.sh" <<EOF
 #!/usr/bin/env bash
 set -uo pipefail
 cd "$wt"
+. "$root/bin/_lib.sh"
 # Claude Code scrubs auth tokens from child-process environments, so workers
 # load credentials themselves from the gitignored container env file.
 if [ -z "\${CLAUDE_CODE_OAUTH_TOKEN:-}\${ANTHROPIC_API_KEY:-}" ] && [ -f "$root/.devcontainer/devcontainer.env" ]; then
@@ -265,12 +278,14 @@ if [ -z "\${CLAUDE_CODE_OAUTH_TOKEN:-}\${ANTHROPIC_API_KEY:-}" ] && [ -f "$root/
 fi
 echo "[worker:$branch] started \$(date '+%F %T')"
 echo "[worker:$branch] log: $log"
-${timeout_prefix}claude -p --dangerously-skip-permissions \\
+run_with_timeout "$WORKER_TIMEOUT_SECS" claude -p --dangerously-skip-permissions \\
     --max-turns $MAX_WORKER_TURNS --verbose --output-format stream-json \\
     ${model:+--model "$model"} ${effort:+--effort "$effort"} \\
     < .worker-prompt.md 2>&1 | tee "$log"
 ec=\${PIPESTATUS[0]}
-echo "\$ec" > .worker-done
+marker_tmp=".worker-done.tmp.\$\$"
+printf '%s\n' "\$ec" > "\$marker_tmp"
+mv -f "\$marker_tmp" .worker-done
 if [ -n "\${TMUX:-}" ]; then tmux rename-window "done-$branch" 2>/dev/null || true; fi
 echo ""
 echo "[worker:$branch] exited \$ec — run 'integrate $branch' (or 'abandon $branch')"
@@ -278,6 +293,11 @@ EOF
 chmod +x "$wt/.worker-run.sh"
 
 session="$(agents_session)"
+if (( resume_requested )); then
+    marker_archive="$wt/.worker-done.previous.$ts.$$"
+    mv "$wt/.worker-done" "$marker_archive"
+    echo "Archived prior completion marker: $marker_archive"
+fi
 if command -v tmux >/dev/null 2>&1; then
     tmux has-session -t "$session" 2>/dev/null || tmux new-session -d -s "$session" -n shell
     # Clear any stale done-window from a previous run of this branch.

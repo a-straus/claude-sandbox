@@ -99,30 +99,13 @@ Do these in order. Skip steps that have nothing to do.
    Move the item to `## Processed` with a one-line disposition (task names,
    question reference, or "declined: crosses non-goal X").
 
-4. **Handle worker branches.** Act on each state `list-agents` reports — and
-   respect `integrate`'s refusals; never merge around them with raw git:
-   - **FINISHED** → `integrate <branch>`. On success, move the task to Done
-     in TASKS.md.
-   - **BLOCKED** (exit 3) → read the worker's BLOCKED.md. If its first line
-     is `type: model-change`, this is NOT an escalation — handle it through
-     the schema gate (below). Otherwise: if GOAL.md, ARCHITECTURE.md,
-     the design contract, or DECISIONS.md already resolves it, re-spawn the same
-     branch with the
-     resolution added to the brief; only failing all that, escalate (step 7)
-     and mark the task Blocked.
-   - **check failed** (exit 5) → re-spawn the same branch; include the
-     failure output in the brief.
-   - **merge conflict** (exit 6) → re-spawn the same branch with a brief to
-     redo the task against the current base.
-   - **protected files modified** (exit 7) → re-spawn with a brief to remove
-     those changes, or abandon. Exit 7 also covers a branch modifying an
-     existing check.sh — workers never change the gate; if the change itself
-     is legitimate, apply it yourself directly on the base branch (you own
-     the file) and re-spawn the worker without it.
-   - **no commits** (exit 4) / **FAILED** / **STALE** / **ORPHAN** →
-     re-spawn to resume (the branch keeps its commits), or `abandon` and
-     re-queue if the work is worthless. Maximum 2 re-spawns per task; after
-     that, mark it Blocked in TASKS.md and escalate.
+4. **Handle worker branches.** For each worker `list-agents` reports:
+   **FINISHED** → `integrate <branch>`; on success, move the task to Done in TASKS.md.
+   For **any non-FINISHED state** (BLOCKED/exit 3 — including a
+   `type: model-change` BLOCKED.md, check-failed/5, conflict/6, protected/7,
+   no-commits/4, FAILED, STALE, ORPHAN) the ONLY procedure is
+   `guide/worker-states.md` — `Read` it and act from it, never from memory.
+   Respect `integrate`'s refusals; never merge around them with raw git.
 
 5. **Keep the trunk green.** After integrations, run `bash check.sh` on the
    base branch. If it is red, trunk repair takes absolute priority — spawn no
@@ -225,104 +208,30 @@ Do these in order. Skip steps that have nothing to do.
    new GOAL.md scope or feedback, remove `.release-done`, and re-run; the
    Done history stays, the delta becomes the new backlog.)
 
-### First iterations (TASKS.md is empty): design before build
+### First iterations & reviews
 
-Two minds design the architecture before any feature work starts:
-
-- **Iteration 1 — draft.** Expand GOAL.md §8 into ARCHITECTURE.md: entities,
-  relationships, and the conventions workers get wrong when left to guess
-  (naming, ID strategy, timestamps, deletion policy, migration policy).
-  If the product has a UI, settle the design contract (design/) in the
-  same pass: a design/ the human already filled is the seeded contract —
-  adopt it as-is (verify the ★ files are present, note gaps for the
-  critic); if it is still the unfilled template, fill every file yourself
-  (INDEX.md identity + principles, tokens.md, screens/, components.md,
-  interaction.md, mockups.md). Commit.
-  Then spawn exactly one worker — the critic, on the strong
-  model at deep effort:
-  `spawn --model "$ORCH_MODEL" --effort high --include GOAL.md
-  --include design arch-critique "<brief>"`. Its brief:
-  read GOAL.md, ARCHITECTURE.md, and the design contract (explicitly
-  permitted — the critic alone reads all of design/), and
-  challenge the design — missing entities, §3 scope creep, simpler
-  alternatives, future pain points — committing findings to CRITIQUE.md. A human-seeded
-  design contract is challenged for feasibility and GOAL.md conflicts only —
-  taste is the human's. Spawn nothing else.
-- **Iteration 2 — reconcile.** Integrate the critique branch. Adopt what
-  survives scrutiny, reject what doesn't, record every contested call in
-  DECISIONS.md, finalize ARCHITECTURE.md (and design/, if in play),
-  `git rm CRITIQUE.md`, commit.
-  THEN decompose GOAL.md into the Backlog: independent, worker-sized tasks
-  with MoSCoW priorities, sequenced per §11 — thinnest end-to-end slice
-  first. The first build task includes creating `check.sh`. When the design
-  contract is in play, the first UI task is the design foundation, and it
-  gets the strong model at deep effort
-  (`spawn --model "$ORCH_MODEL" --effort high --include design/INDEX.md
-  --include design/tokens.md --include design/components.md
-  --include design/interaction.md design-foundation "..."`):
-  materialize the tokens.md tokens verbatim as the project's token
-  stylesheet and build the components.md base components as a real,
-  composable component library. Tokens spent here pay rent on every UI
-  task after — this brief is the one place a worker is pointed at the full
-  tokens.md + components.md + interaction.md set; every later UI task
-  composes the built library instead of inventing styles or re-reading the
-  whole contract.
-- Every ~5 integrations thereafter, queue a review task on the strong model
-  at high effort (`spawn --model "$ORCH_MODEL" --effort high
-  --include GOAL.md --include design review-NN
-  "..."`): the reviewer reads GOAL.md,
-  ARCHITECTURE.md, and the design contract (read-only; reviewers, like the
-  critic, read all of design/), audits the recent diffs against
-  them — UI diffs additionally for token discipline (no raw visual values),
-  component reuse, and microcopy conformance — writes findings to REVIEW.md,
-  and commits. Next iteration: read REVIEW.md,
-  convert real findings into Backlog items, `git rm REVIEW.md`, commit.
+When TASKS.md is empty, the first two iterations are a **design phase** — draft
+ARCHITECTURE.md (+ design/) → spawn one critic → reconcile → decompose the Backlog
+— before any build work. And every ~5 integrations thereafter, queue a **review**
+task; the iteration **after** a review branch integrates, `REVIEW.md` is on base and
+its findings must be converted to Backlog items (then `git rm REVIEW.md`). All three
+flows — the ONLY procedures for them — live in `guide/design-phase.md`: `Read` it
+whenever TASKS.md is empty, before queuing a review, **or when `REVIEW.md` or
+`CRITIQUE.md` exists on base**; do not reconstruct the draft/critique/reconcile flow
+from memory.
 
 ---
 
 ## The schema gate
 
-The data model is shared state; changing it concurrently is how parallel
-agents destroy each other's work. Therefore: **at most one model change in
-flight, ever, applied while nothing else runs.** You approve these changes
-yourself — the human is never asked unless a §13 trigger is crossed.
-
-1. **Request.** A worker that discovers it needs a schema change beyond what
-   its brief grants does not make it — it commits BLOCKED.md with first line
-   `type: model-change` (proposed change, why, impact) and exits.
-2. **Drain.** On seeing one: record `MODEL CHANGE PENDING: <summary>
-   (requested by <branch>)` under TASKS.md ## Blocked. Spawn nothing new.
-   Let running workers finish; integrate them as they complete.
-3. **Decide.** When nothing is running and nothing integrable remains:
-   evaluate the request against GOAL.md §8/§3 and ARCHITECTURE.md. This is
-   your call — approve, amend, or deny on your own authority; escalate only
-   if it would cross a §13 trigger (non-goal, irreversible data loss, paid
-   dependency, external contract).
-4. **Apply (if approved).** Update ARCHITECTURE.md (+ Change log) and
-   DECISIONS.md, commit. Spawn ONE task, alone, on the strong model at deep
-   effort (`--model "$ORCH_MODEL" --effort high`): apply the migration and
-   adapt all affected code, check.sh green. Integrate it.
-5. **Resume.** Clear the pending marker. Re-spawn the requester against the
-   new base — its brief now quotes the updated model (its old branch may
-   need redoing; that is expected and fine). Resume normal spawning.
-6. **Queue.** Multiple pending requests are processed one per gate cycle —
-   later requesters re-enter against the post-change world and must
-   re-justify against the new ARCHITECTURE.md (their change may no longer
-   be needed).
-7. **Deny.** Record why in DECISIONS.md; re-spawn the requester with the
-   prescribed workaround in its brief.
-
-**Design changes are lighter — no gate.** The design contract (design/)
-has one writer (you)
-but needs no ceremony: when an integration lands a new shared component, or
-a task genuinely needs a token tokens.md lacks, fold it into the contract
-yourself (components.md / tokens.md + an INDEX.md Change-log line) in the
-same iteration, so the contract never
-trails the product by more than one pass. Decide design questions from the
-seeded identity and principles — that is what they are for; never ask the
-human to approve a component. The only design escalation is replacing a
-human-seeded identity (INDEX.md D0/D1) wholesale — that is §13 territory;
-everything below it is yours.
+The data model is shared state; changing it concurrently is how parallel agents
+destroy each other's work. Rule: **at most one model change in flight, ever,
+applied while nothing else runs** — you approve it yourself unless a §13 trigger is
+crossed. The full gate (request → drain → decide → apply → resume → queue → deny)
+is the ONLY procedure for a model change and lives in `guide/schema-gate.md`:
+`Read` it in full the moment a `type: model-change` BLOCKED.md appears or a schema
+change is requested — do not improvise a schema change from memory. (Design changes
+need no gate; that too is covered there.)
 
 ---
 
@@ -330,15 +239,15 @@ everything below it is yours.
 
 | Command | What it does |
 |---------|--------------|
-| `spawn [--model <m>] [--effort <e>] [--include <path>]... <branch> "<brief>"` | Launch a headless worker on its own branch + worktree. `--effort low\|medium\|high\|xhigh\|max` sets thinking depth (default: $WORKER_EFFORT). `--include` grants a context file (GOAL.md, a state file, a design/ file or the whole `design` dir) back into the worker's tree — pass one per file the brief names. Re-running for an existing branch resumes it (pass the same flags). Refuses when capacity is full (exit 2) or the architecture is in flight — CRITIQUE.md on base, or uncommitted ARCHITECTURE.md/design changes (exit 3): reconcile and commit, then spawn |
+| `spawn [--resume] [--model <m>] [--effort <e>] [--include <path>]... <branch> "<brief>"` | Launch a headless worker on its own branch + worktree. Use `--resume` after a worker has written its completion marker (FAILED/BLOCKED/check or merge refusal); plain re-run remains for STALE/ORPHAN workers with no marker. `--effort low\|medium\|high\|xhigh\|max` sets thinking depth (default: $WORKER_EFFORT). `--include` grants a context file back into the worker's tree. Refuses when capacity is full (exit 2) or architecture is in flight (exit 3) |
 | `integrate <branch>` | Gate (completion marker, BLOCKED.md, commits, protected files, check.sh), then merge to base and clean up. Exits: 2 not finished · 3 blocked · 4 no commits · 5 check failed · 6 conflict · 7 protected files |
 | `abandon <branch>` | Discard a branch and its worktree without merging |
 | `list-agents` | Classify every worker branch: RUNNING / FINISHED / BLOCKED / FAILED / STALE / ORPHAN, with the action each needs |
 
 Workers are headless `claude -p` runs. They receive their brief plus the
 source code; `spawn` gives each worktree a sparse checkout that excludes
-CLAUDE.md, GOAL.md, TASKS.md, QUESTIONS.md, DECISIONS.md, FEEDBACK.md, and
-design/ — minus what `--include` grants back — so the orchestrator's context
+CLAUDE.md, GOAL.md, TASKS.md, QUESTIONS.md, DECISIONS.md, FEEDBACK.md, design/,
+and guide/ — minus what `--include` grants back — so the orchestrator's context
 never pollutes a worker's. A worker's brief is its
 whole instruction set, which is why briefs must be self-contained and must
 name (not paste) the contract files that apply — and why every named
@@ -364,10 +273,14 @@ blockers by committing BLOCKED.md, and their full transcripts land in
   applies later: commit any ARCHITECTURE.md/design amendment before spawning
   a task that depends on it, and quote the committed version in the brief.
 - **At most one schema-affecting task in flight, ever.** All data-model
-  changes go through the schema gate; no brief grants schema changes unless
+  changes go through the schema gate (`guide/schema-gate.md` — the only
+  procedure; Read it, don't improvise); no brief grants schema changes unless
   the gate approved them. The design contract (design/) needs no gate but
   has one writer: you. Workers never edit it; you fold design evolution
   back into it as it lands.
+- **Never handle a non-FINISHED worker from memory.** BLOCKED/check-failed/
+  conflict/protected/no-commits/FAILED/STALE/ORPHAN each have an exact action
+  in `guide/worker-states.md` — Read it and follow it (step 4).
 - **Default to deciding, not asking.** A question to the human about
   anything GOAL.md doesn't constrain is a failure of this framework, not
   diligence. Decide, record in DECISIONS.md, move.
@@ -384,9 +297,5 @@ blockers by committing BLOCKED.md, and their full transcripts land in
 
 ## Network
 
-GitHub, npm, and the Anthropic API are allowlisted; everything else is
-blocked. If a worker needs another host (PyPI, a CDN, etc.), that is an
-escalation — the human must add it to `.devcontainer/init-firewall.sh` and
-rebuild. Repeated network failures to an allowlisted host usually mean
-rotated CDN IPs; the outer loop refreshes the firewall periodically on its
-own.
+GitHub, npm, and the Anthropic API are allowlisted; everything else is blocked. On
+any network failure, `Read guide/network.md` before treating it as an escalation.

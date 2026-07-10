@@ -14,6 +14,7 @@
 #   7  branch modifies protected state files (GOAL.md / TASKS.md / QUESTIONS.md /
 #      DECISIONS.md / ARCHITECTURE.md / FEEDBACK.md / design/) or an existing
 #      check.sh — re-spawn with a brief to drop those changes, or abandon
+#   8  rollback itself failed — trunk may be inconsistent; human inspection required
 set -euo pipefail
 . "$(dirname "$0")/_lib.sh"
 
@@ -44,17 +45,24 @@ if [[ ! -f "$wt/.worker-done" ]]; then
     exit 2
 fi
 
-wec="$(head -1 "$wt/.worker-done" 2>/dev/null | tr -dc '0-9')"
-if [[ -n "$wec" && "$wec" != "0" ]]; then
+if ! wec="$(worker_exit_code "$wt/.worker-done")"; then
+    echo "REFUSED: completion marker for '$branch' is corrupt (expected exactly" >&2
+    echo "one non-negative integer). Treating worker state as FAILED/UNKNOWN." >&2
+    echo "Inspect the worker log, then use 'spawn --resume $branch \"<brief>\"'" >&2
+    echo "or abandon it." >&2
+    exit 2
+fi
+if [[ "$wec" != "0" ]]; then
     echo "REFUSED: worker for '$branch' exited with code $wec (timeout or error —" >&2
     echo "it likely did not finish). Review the latest logs/$branch.*.jsonl, then" >&2
-    echo "re-spawn to resume, or abandon." >&2
+    echo "resume with 'spawn --resume $branch \"<brief>\"', or abandon." >&2
     exit 2
 fi
 
 if [[ -n "$(git -C "$wt" status --porcelain 2>/dev/null)" ]]; then
     echo "REFUSED: uncommitted changes left in the worktree — the worker did not" >&2
-    echo "finish cleanly. Re-spawn '$branch' to review and commit, or abandon." >&2
+    echo "finish cleanly. Use 'spawn --resume $branch \"<brief>\"' to review" >&2
+    echo "and commit, or abandon." >&2
     git -C "$wt" status --porcelain | head -10 >&2
     exit 2
 fi
@@ -68,7 +76,7 @@ if branch_blocked "$root" "$branch"; then
     echo "──────────────────────────────────────────────────" >&2
     echo "Resolve the blocker (answer it yourself from GOAL.md, or escalate to the" >&2
     echo "human via QUESTIONS.md), then re-spawn '$branch' with the resolution in" >&2
-    echo "the brief, or abandon it." >&2
+    echo "the brief using 'spawn --resume', or abandon it." >&2
     exit 3
 fi
 
@@ -146,17 +154,96 @@ fi
 
 # ── Merge ─────────────────────────────────────────────────────────────────────
 
+dirty="$(non_state_dirty "$root")"
+if [[ -n "$dirty" ]]; then
+    echo "REFUSED: base worktree has source-code changes outside orchestrator" >&2
+    echo "state files. Commit, stash, or remove them before autonomous integration:" >&2
+    printf '%s\n' "$dirty" | sed 's/^/    /' >&2
+    exit 1
+fi
+
+# Human inbox/semantic-state edits may arrive while the loop is live. Stash
+# them before merge verification so check.sh gets a clean tracked tree and a
+# failed check can always be rolled back with reset --hard. non_state_dirty
+# above proves this stash contains no source changes.
+state_stash=""
+if [[ -n "$(git -C "$root" status --porcelain)" ]]; then
+    if ! git -C "$root" stash push -u -m "orchestrator: preserve state during integrate $branch" \
+            >/dev/null; then
+        echo "REFUSED: could not preserve local orchestrator state before integration." >&2
+        exit 1
+    fi
+    state_stash='stash@{0}'
+fi
+
+restore_state() {
+    [[ -n "$state_stash" ]] || return 0
+    if git -C "$root" stash apply --index "$state_stash" >/dev/null 2>&1; then
+        git -C "$root" stash drop "$state_stash" >/dev/null
+        state_stash=""
+        return 0
+    fi
+    return 1
+}
+
 echo "=== Integrating '$branch' into '$base' ($commits commits) ==="
 git -C "$root" log --oneline "$base..$branch"
 echo ""
 
 git -C "$root" checkout -q "$base"
+base_before="$(git -C "$root" rev-parse HEAD)"
 if ! git -C "$root" merge --no-ff "$branch" -m "Integrate: $branch"; then
     git -C "$root" merge --abort 2>/dev/null || true
+    if ! restore_state; then
+        echo "WARNING: merge aborted, but local state could not be restored;" >&2
+        echo "it remains preserved in $state_stash." >&2
+    fi
     echo "REFUSED: merge conflict between '$branch' and '$base' (merge aborted," >&2
     echo "'$base' is clean). Re-spawn '$branch' with a brief to redo the task" >&2
     echo "against the current '$base', or abandon it." >&2
     exit 6
+fi
+
+# A branch passing in isolation is evidence; only the merged result is the
+# integration gate. Restore the previous base commit if the combined tree
+# fails so integrate can never return success with a broken trunk.
+if [[ -f "$root/check.sh" ]]; then
+    echo "=== Running check.sh on merged '$base' (timeout ${CHECK_TIMEOUT_SECS}s) ==="
+    merged_check_log="$root/logs/check-merged-$branch.$(date +%Y%m%d-%H%M%S).log"
+    if ! (cd "$root" && run_with_timeout "$CHECK_TIMEOUT_SECS" bash check.sh) \
+            > "$merged_check_log" 2>&1; then
+        if ! git -C "$root" reset --hard "$base_before" >/dev/null; then
+            echo "FATAL: merged-result check failed AND rollback failed." >&2
+            echo "Trunk may still be at the rejected merge; inspect immediately." >&2
+            echo "Local state remains preserved in ${state_stash:-the working tree}." >&2
+            exit 8
+        fi
+        if ! restore_state; then
+            echo "WARNING: trunk was restored, but local state could not be reapplied;" >&2
+            echo "it remains preserved in $state_stash." >&2
+        fi
+        echo "REFUSED: merged-result check.sh failed; '$base' was restored to" >&2
+        echo "$base_before. Last 20 lines:" >&2
+        tail -20 "$merged_check_log" >&2
+        echo "Full log: $merged_check_log" >&2
+        echo "Use 'spawn --resume $branch \"<brief including this failure>\"'." >&2
+        exit 5
+    fi
+    echo "Merged-result check.sh passed."
+fi
+
+if ! restore_state; then
+    # A worker should not touch semantic state, but REVIEW/CRITIQUE or an
+    # unusual inbox collision can still make reapplication fail. Abort the
+    # integration rather than strand the human's edits behind a merged trunk.
+    git -C "$root" reset --hard "$base_before" >/dev/null \
+        || { echo "FATAL: could not roll back after state-restore conflict." >&2; exit 8; }
+    if ! restore_state; then
+        echo "REFUSED: integration was rolled back; local state remains in $state_stash." >&2
+    else
+        echo "REFUSED: integration was rolled back because local state conflicted." >&2
+    fi
+    exit 1
 fi
 
 # ── Cleanup ───────────────────────────────────────────────────────────────────
@@ -172,4 +259,3 @@ fi
 
 echo ""
 echo "Done. '$branch' integrated into '$base' and cleaned up."
-echo "Reminder: run 'bash check.sh' on '$base' too — the merge result itself is unverified."
