@@ -63,6 +63,13 @@ fg=0
 if [[ "${1:-}" == "--fg" ]]; then fg=1; shift; fi
 repo="${1:-$PWD}"
 repo="$(cd "$repo" && pwd)"
+# Optional per-project credentials. Keep subscription tokens out of the shared
+# harness and out of git so projects can be rotated independently.
+if [[ -f "$repo/.orchestrator.env" ]]; then
+    set -a
+    . "$repo/.orchestrator.env"
+    set +a
+fi
 # Include a stable hash of the absolute repo path so two projects with the
 # same basename cannot collide in tmux or under WORKTREE_ROOT.
 project_key="$(project_id "$repo")"

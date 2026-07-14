@@ -157,7 +157,7 @@ ensure_excludes() { # ensure_excludes <root>
     grep -vx -e GOAL.md -e TASKS.md -e QUESTIONS.md -e DECISIONS.md \
         "$exclude" > "$tmp" 2>/dev/null || true
     mv "$tmp" "$exclude"
-    for line in logs/ STOP .release-done .orchestrator.pid '.worker-*'; do
+    for line in logs/ STOP .release-done .orchestrator.pid '.orchestrator.env*' '.worker-*'; do
         grep -qxF "$line" "$exclude" 2>/dev/null || echo "$line" >> "$exclude"
     done
 }
